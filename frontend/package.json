@@ -1,0 +1,19 @@
+{
+  "name": "feynman-learn-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for Feynman Learn - Black & White Theme",
+  "main": "index.html",
+  "scripts": {
+    "dev": "python -m http.server 3000",
+    "serve": "python -m http.server 3000",
+    "build": "echo 'No build process needed for vanilla JS'"
+  },
+  "keywords": [
+    "education",
+    "learning",
+    "feynman",
+    "frontend"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
