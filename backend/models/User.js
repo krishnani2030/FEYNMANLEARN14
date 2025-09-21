@@ -17,6 +17,16 @@ const userSchema = new mongoose.Schema({
         trim: true,
         match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email address']
     },
+    username: {
+        type: String,
+        required: [true, 'Username is required'],
+        unique: true,
+        lowercase: true,
+        trim: true,
+        minlength: [3, 'Username must be at least 3 characters long'],
+        maxlength: [20, 'Username cannot exceed 20 characters'],
+        match: [/^[a-z0-9_]+$/, 'Username can only contain lowercase letters, numbers, and underscores']
+    },
     passwordHash: {
         type: String,
         required: [true, 'Password is required'],
@@ -42,7 +52,18 @@ const userSchema = new mongoose.Schema({
     createdSessions: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Session'
-    }]
+    }],
+    schoolGrade: {
+        type: String,
+        enum: ['High School', 'College', 'Other'],
+        default: 'Other'
+    },
+    subjectInterests: [
+        {
+            type: String,
+            trim: true,
+        }
+    ],
 }, {
     timestamps: true,
     toJSON: {
@@ -54,8 +75,9 @@ const userSchema = new mongoose.Schema({
     }
 });
 
-// Index for faster email lookups
+// Index for faster email and username lookups
 userSchema.index({ email: 1 });
+userSchema.index({ username: 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
@@ -92,7 +114,37 @@ userSchema.methods.getDisplayName = function() {
 // Update last login
 userSchema.methods.updateLastLogin = function() {
     this.lastLogin = new Date();
-    return this.save();
+    // Save without triggering full validation to avoid failures for legacy users missing new required fields
+    return this.save({ validateBeforeSave: false });
+};
+
+// Generate unique username from name
+userSchema.statics.generateUniqueUsername = async function(name) {
+    // Create base username from name
+    let baseUsername = name.toLowerCase()
+        .replace(/[^a-z0-9]/g, '') // Remove non-alphanumeric characters
+        .substring(0, 15); // Limit length
+    
+    if (baseUsername.length < 3) {
+        baseUsername = `user_${Date.now().toString().slice(-5)}`;
+    }
+    
+    let username = baseUsername;
+    let counter = 1;
+    
+    // Check if username exists and increment if needed
+    while (await this.findOne({ username })) {
+        username = `${baseUsername}${counter}`;
+        counter++;
+        
+        // Prevent infinite loop
+        if (counter > 999) {
+            username = `${baseUsername}_${Date.now().toString().slice(-5)}`;
+            break;
+        }
+    }
+    
+    return username;
 };
 
 module.exports = mongoose.model('User', userSchema);

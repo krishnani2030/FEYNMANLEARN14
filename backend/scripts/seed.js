@@ -55,9 +55,11 @@ const seedUsers = async () => {
             const hashedPassword = await bcrypt.hash(userData.passwordHash, salt);
             
             // Create user with hashed password
+            const username = await User.generateUniqueUsername(userData.name);
             const user = new User({
                 name: userData.name,
                 email: userData.email,
+                username,
                 passwordHash: hashedPassword,
                 role: userData.role
             });
@@ -66,6 +68,22 @@ const seedUsers = async () => {
             createdUsers.push(user);
         }
         console.log(`Created ${createdUsers.length} users`);
+
+        // Ensure a Feynman admin user exists
+        let feynman = await User.findOne({ username: 'feynman' });
+        if (!feynman) {
+            const salt = await bcrypt.genSalt(12);
+            const hashedPassword = await bcrypt.hash('welcome123', salt);
+            feynman = new User({
+                name: 'Richard Feynman',
+                email: 'feynman@feynmanlearn.com',
+                username: 'feynman',
+                passwordHash: hashedPassword,
+                role: 'admin'
+            });
+            await feynman.save();
+            console.log('Created Feynman admin user');
+        }
 
         return createdUsers;
 

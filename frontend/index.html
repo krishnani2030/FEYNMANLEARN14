@@ -135,8 +135,8 @@
                     </div>
                     <form id="login-form" class="auth-form">
                         <div class="form-group">
-                            <label class="form-label" for="login-email">Email</label>
-                            <input type="email" id="login-email" class="form-control" required>
+                            <label class="form-label" for="login-identifier">Email or Username</label>
+                            <input type="text" id="login-identifier" class="form-control" required>
                         </div>
                         <div class="form-group">
                             <label class="form-label" for="login-password">Password</label>
@@ -173,6 +173,18 @@
                             <label class="form-label" for="signup-password">Password</label>
                             <input type="password" id="signup-password" class="form-control" required>
                         </div>
+                        <div class="form-group">
+                            <label class="form-label" for="signup-school-grade">School Grade</label>
+                            <select id="signup-school-grade" class="form-control">
+                                <option value="Other">Select Grade</option>
+                                <option value="High School">High School</option>
+                                <option value="College">College</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="signup-subject-interests">Subject Interests (comma-separated)</label>
+                            <input type="text" id="signup-subject-interests" class="form-control" placeholder="e.g., Math, Physics, History">
+                        </div>
                         <button type="submit" class="btn btn--primary btn--full-width">Create Account</button>
                     </form>
                     <div class="auth-footer">
@@ -205,6 +217,8 @@
                         <div class="dashboard-nav">
                             <button class="nav-tab active" data-tab="my-sessions">My Sessions</button>
                             <button class="nav-tab" data-tab="browse-sessions">Browse Sessions</button>
+                            <button class="nav-tab" data-tab="chat">Chat</button>
+                            <button class="nav-tab" data-tab="notes">Notes</button>
                             <button class="btn btn--primary" onclick="showCreateSession()">Create Session</button>
                         </div>
 
@@ -225,6 +239,71 @@
                                 <!-- Browse sessions will be populated here -->
                             </div>
                         </div>
+
+                        <!-- Chat Tab Content -->
+                        <div id="chat" class="tab-content hidden">
+                            <div class="chat-container">
+                                <div class="chat-sidebar">
+                                    <h3>Existing Chats</h3>
+                                    <ul id="existing-chats-list" class="existing-chats-list">
+                                        <!-- Existing chats (General and private) will be populated here -->
+                                        <li class="existing-chat-item active" data-chat-type="general">
+                                            <h4>General Chat</h4>
+                                            <p>Click to view general discussions.</p>
+                                        </li>
+                                    </ul>
+                                    <button class="btn btn--primary btn--full-width" id="start-new-chat-btn">Start New Chat</button>
+                                </div>
+                                <div id="chat-main-area" class="chat-main hidden">
+                                    <div class="chat-user-selection-container hidden" id="chat-new-message-section">
+                                        <input type="text" id="chat-user-search-input" class="form-control" placeholder="Search or select user...">
+                                        <ul id="chat-user-suggestions" class="user-suggestions-list">
+                                            <!-- User suggestions will be populated here -->
+                                        </ul>
+                                        <button class="btn btn--secondary btn--sm" id="back-to-existing-chats-btn">← Back to Chats</button>
+                                    </div>
+
+                                    <div id="active-chat-window">
+                                        <div id="chat-header" class="chat-header">
+                                            <h3 id="chat-recipient-name">General Chat</h3>
+                                            <div id="chat-recipient-details" class="chat-recipient-details">
+                                                <!-- Recipient details (grade, subjects) will be populated here -->
+                                            </div>
+                                            <button class="btn btn--sm btn--secondary hidden" id="start-private-video-call-btn">Start Video Call</button>
+                                            <button class="btn btn--sm btn--secondary hidden" id="start-private-voice-call-btn">Start Voice Call</button>
+                                        </div>
+                                        <div id="chat-messages" class="chat-messages">
+                                            <!-- Chat messages will be populated here -->
+                                        </div>
+                                        <div class="chat-input">
+                                            <input type="text" id="chat-message-input" placeholder="Type your message..." class="form-control">
+                                            <button id="send-chat-button" class="btn btn--primary">Send</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Notes Tab Content -->
+                        <div id="notes" class="tab-content hidden">
+                            <div class="section-header">
+                                <h3>Notes</h3>
+                                <button class="btn btn--primary" id="create-note-btn">New Note</button>
+                                <button class="btn btn--secondary" id="export-notes-pdf-btn">Export to PDF</button>
+                                <input type="file" id="import-pdf-input" accept=".pdf" style="display: none;">
+                                <button class="btn btn--secondary" id="import-pdf-btn">Import PDF</button>
+                            </div>
+                            <div id="notes-list" class="notes-list">
+                                <!-- Notes will be populated here -->
+                            </div>
+                            <div id="note-editor" class="note-editor hidden">
+                                <input type="text" id="note-title-input" class="form-control" placeholder="Note Title">
+                                <textarea id="note-content-input" class="form-control" placeholder="Write your notes here..."></textarea>
+                                <button class="btn btn--primary" id="save-note-btn">Save Note</button>
+                                <button class="btn btn--secondary" id="cancel-note-btn">Cancel</button>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
             </main>
@@ -268,11 +347,6 @@
                         <div class="form-group">
                             <label class="form-label" for="session-capacity">Max Participants</label>
                             <input type="number" id="session-capacity" class="form-control" min="1" max="10" required>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label" for="session-meet-link">Google Meet Link (Optional)</label>
-                            <input type="url" id="session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
                         </div>
                         
                         <button type="submit" class="btn btn--primary btn--lg">Create Session</button>
@@ -322,11 +396,6 @@
                             <input type="number" id="edit-session-capacity" class="form-control" min="1" max="10" required>
                         </div>
                         
-                        <div class="form-group">
-                            <label class="form-label" for="edit-session-meet-link">Google Meet Link (Optional)</label>
-                            <input type="url" id="edit-session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
-                        </div>
-                        
                         <div class="form-actions">
                             <button type="submit" class="btn btn--primary btn--lg">Update Session</button>
                             <button type="button" class="btn btn--danger btn--lg" onclick="handleDeleteSession()">Delete Session</button>
@@ -353,12 +422,29 @@
             </div>
         </div>
 
+        <!-- Video Conference Page -->
+        <div id="video-conference-page" class="page hidden">
+            <div class="container">
+                <div class="video-conference-content">
+                    <div class="page-header">
+                        <h2 id="conference-topic">Video Conference</h2>
+                        <button class="btn btn--secondary" onclick="showDashboard()">← Back to Dashboard</button>
+                    </div>
+                    <div id="jitsi-container" style="height: 600px; width: 100%;"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Alert Messages -->
         <div id="alert" class="alert hidden">
             <span id="alert-message"></span>
         </div>
     </div>
 
+    <script src="https://meet.jit.si/external_api.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

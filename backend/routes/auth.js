@@ -40,14 +40,48 @@ router.post('/signup', [
             });
         }
 
+        // Generate unique username
+        const username = await User.generateUniqueUsername(name);
+
         // Create new user
         const user = new User({
             name,
             email,
+            username,
             passwordHash: password // Will be hashed by pre-save middleware
         });
 
         await user.save();
+
+        // Create a welcome message from Feynman user
+        try {
+            const Message = require('../models/Message');
+            let feynman = await User.findOne({ username: 'feynman' });
+            if (!feynman) {
+                const feynmanUsername = 'feynman';
+                feynman = new User({
+                    name: 'Richard Feynman',
+                    email: 'feynman@feynmanlearn.com',
+                    username: feynmanUsername,
+                    passwordHash: 'welcome123',
+                    role: 'admin'
+                });
+                await feynman.save();
+            }
+
+            const welcome = new Message({
+                sessionId: null,
+                sender: feynman._id,
+                senderName: feynman.name,
+                senderUsername: feynman.username,
+                recipient: user._id,
+                recipientUsername: user.username,
+                text: 'Welcome to Feynman Learn! Start a new chat or join a session to learn by teaching. 🎉'
+            });
+            await welcome.save();
+        } catch (e) {
+            console.error('Failed to create welcome message:', e);
+        }
 
         // Generate token
         const token = generateToken(user._id);
@@ -67,6 +101,7 @@ router.post('/signup', [
                 name: user.name,
                 email: user.email,
                 role: user.role,
+                username: user.username,
                 createdAt: user.createdAt
             }
         });
@@ -81,7 +116,7 @@ router.post('/signup', [
 
 // Login route
 router.post('/login', [
-    body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+    body('identifier').notEmpty().withMessage('Email or username is required'),
     body('password').notEmpty().withMessage('Password is required')
 ], async (req, res) => {
     try {
@@ -93,13 +128,15 @@ router.post('/login', [
             });
         }
 
-        const { email, password } = req.body;
+        const { identifier, password } = req.body;
 
-        // Find user
-        const user = await User.findOne({ email, isActive: true });
+        // Find user by email or username
+        const isEmail = identifier.includes('@');
+        const query = isEmail ? { email: identifier } : { username: identifier };
+        const user = await User.findOne({ ...query, isActive: true });
         if (!user) {
             return res.status(401).json({
-                error: 'Invalid email or password'
+                error: 'Invalid username/email or password'
             });
         }
 
@@ -107,8 +144,19 @@ router.post('/login', [
         const isPasswordValid = await user.comparePassword(password);
         if (!isPasswordValid) {
             return res.status(401).json({
-                error: 'Invalid email or password'
+                error: 'Invalid username/email or password'
             });
+        }
+
+        // Ensure legacy users get a username
+        if (!user.username) {
+            try {
+                const generated = await User.generateUniqueUsername(user.name || 'user');
+                user.username = generated;
+                await user.save({ validateBeforeSave: false });
+            } catch (e) {
+                console.warn('Failed to auto-assign username on login:', e);
+            }
         }
 
         // Update last login
@@ -131,6 +179,7 @@ router.post('/login', [
                 id: user._id,
                 name: user.name,
                 email: user.email,
+                username: user.username,
                 role: user.role,
                 lastLogin: user.lastLogin
             }
@@ -165,6 +214,7 @@ router.get('/me', authMiddleware, async (req, res) => {
                 name: user.name,
                 email: user.email,
                 role: user.role,
+                username: user.username,
                 createdAt: user.createdAt,
                 lastLogin: user.lastLogin,
                 enrolledSessions: user.enrolledSessions,

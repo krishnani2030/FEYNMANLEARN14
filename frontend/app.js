@@ -1,7 +1,8 @@
 // Feynman Learn Application JavaScript - Backend Integration
 
 // API Configuration
-const API_BASE_URL = window.location.hostname === 'localhost' ? 'http://localhost:5050/api' : '/api';
+// Use same-origin API base so frontend and backend run on the same port
+const API_BASE_URL = '/api';
 
 // Mock data (will be replaced with API calls)
 let currentUser = null;
@@ -58,32 +59,40 @@ async function apiRequest(endpoint, options = {}) {
 }
 
 // Authentication Functions
-async function login(email, password) {
+async function login(identifier, password) {
     try {
         const data = await apiRequest('/auth/login', {
             method: 'POST',
-            body: JSON.stringify({ email, password })
+            body: JSON.stringify({ identifier, password })
         });
 
         currentUser = data.user;
         localStorage.setItem('user', JSON.stringify(currentUser));
+        // Join user-specific room immediately after login
+        if (window.appSocket && currentUser?.id) {
+            window.appSocket.emit('join-user', currentUser.id);
+        }
         return data;
     } catch (error) {
         throw error;
     }
 }
 
-async function signup(name, email, password) {
+async function signup(name, email, password, schoolGrade, subjectInterests) {
     try {
         console.log('Attempting to signup with email:', email);
         const data = await apiRequest('/auth/signup', {
             method: 'POST',
-            body: JSON.stringify({ name, email, password })
+            body: JSON.stringify({ name, email, password, schoolGrade, subjectInterests })
         });
 
         console.log('Signup successful:', data);
         currentUser = data.user;
         localStorage.setItem('user', JSON.stringify(currentUser));
+        // Join user-specific room immediately after signup
+        if (window.appSocket && currentUser?.id) {
+            window.appSocket.emit('join-user', currentUser.id);
+        }
         return data;
     } catch (error) {
         console.error('Signup API error:', error);
@@ -117,6 +126,10 @@ async function getCurrentUser() {
         const data = await apiRequest('/auth/me');
         currentUser = data.user;
         localStorage.setItem('user', JSON.stringify(currentUser));
+        // Ensure we are in the user-specific room for private messages
+        if (window.appSocket && currentUser?.id) {
+            window.appSocket.emit('join-user', currentUser.id);
+        }
         return data.user;
     } catch (error) {
         // If API call fails, clear local state
@@ -161,7 +174,6 @@ async function createSession(sessionData) {
                 level: sessionData.level === 'High School' ? 'high_school' : 'college',
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
-                meetLink: sessionData.meetLink || '',
                 description: sessionData.description || ''
             })
         });
@@ -178,7 +190,6 @@ async function createSession(sessionData) {
                 date: dateTime.toISOString(),
                 time: sessionData.time,
                 maxParticipants: parseInt(sessionData.maxParticipants),
-                meetLink: sessionData.meetLink || '',
                 creatorId: currentUser?.id || '1',
                 creatorName: currentUser?.name || 'You',
                 participants: [],
@@ -206,7 +217,6 @@ async function updateSession(sessionId, sessionData) {
                 level: sessionData.level === 'High School' ? 'high_school' : 'college',
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
-                meetLink: sessionData.meetLink || '',
                 description: sessionData.description || ''
             })
         });
@@ -225,7 +235,6 @@ async function updateSession(sessionId, sessionData) {
                     date: dateTime.toISOString(),
                     time: sessionData.time,
                     maxParticipants: parseInt(sessionData.maxParticipants),
-                    meetLink: sessionData.meetLink || ''
                 };
                 return sessions[sessionIndex];
             }
@@ -275,7 +284,6 @@ function getMockSessions() {
             "date": "2025-08-20",
             "time": "15:00",
             "maxParticipants": 4,
-            "meetLink": "https://meet.google.com/abc-defg-hij",
             "creatorId": "2",
             "creatorName": "Sarah Kim",
             "participants": ["1"],
@@ -289,7 +297,6 @@ function getMockSessions() {
             "date": "2025-08-19",
             "time": "16:30",
             "maxParticipants": 3,
-            "meetLink": "https://meet.google.com/xyz-uvw-rst",
             "creatorId": "3",
             "creatorName": "Mike Johnson",
             "participants": [],
@@ -303,7 +310,6 @@ function getMockSessions() {
             "date": "2025-08-18",
             "time": "14:00", 
             "maxParticipants": 5,
-            "meetLink": "https://meet.google.com/def-ghi-jkl",
             "creatorId": "1",
             "creatorName": "Alex Chen",
             "participants": ["2", "3"],
@@ -317,7 +323,6 @@ function getMockSessions() {
             "date": "2025-08-21",
             "time": "10:00",
             "maxParticipants": 6,
-            "meetLink": "",
             "creatorId": "1", 
             "creatorName": "Alex Chen",
             "participants": [],
@@ -333,6 +338,51 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Set up form event listeners
     setupFormEventListeners();
+
+    // Initialize Socket.IO (same-origin)
+    const socket = io(window.location.origin, {
+        withCredentials: true
+    });
+    window.appSocket = socket;
+
+    socket.on('connect', () => {
+        console.log('Connected to Socket.IO');
+        // Join a default room or a user-specific room if needed
+        // For now, let's assume a general chat room
+        socket.emit('join-session', 'general-chat'); 
+        if (currentUser?.id) {
+            socket.emit('join-user', currentUser.id);
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from Socket.IO');
+    });
+
+    socket.on('chat-message', (message) => {
+        console.log('Received chat message:', message);
+        displayChatMessage(message);
+    });
+
+    // Handle sending chat messages
+    const chatMessageInput = document.getElementById('chat-message-input');
+    const sendChatButton = document.getElementById('send-chat-button');
+
+    if (sendChatButton) {
+        sendChatButton.addEventListener('click', () => {
+            sendChatMessage(chatMessageInput.value);
+            chatMessageInput.value = '';
+        });
+    }
+
+    if (chatMessageInput) {
+        chatMessageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendChatMessage(chatMessageInput.value);
+                chatMessageInput.value = '';
+            }
+        });
+    }
 
     // Check if user is already logged in
     const savedUser = localStorage.getItem('user');
@@ -362,6 +412,24 @@ document.addEventListener('DOMContentLoaded', async function() {
         console.log('Using mock data - backend may not be available');
         sessions = getMockSessions();
     }
+
+    // Event listener for starting a private video call
+    document.getElementById('start-private-video-call-btn')?.addEventListener('click', () => {
+        if (selectedChatRecipient) {
+            startPrivateVideoCall(selectedChatRecipient._id, selectedChatRecipient.name);
+        } else {
+            showAlert('Please select a user to start a video call.', 'error');
+        }
+    });
+
+    // Event listener for starting a private voice (audio-only) call
+    document.getElementById('start-private-voice-call-btn')?.addEventListener('click', () => {
+        if (selectedChatRecipient) {
+            startPrivateVoiceCall(selectedChatRecipient._id, selectedChatRecipient.name);
+        } else {
+            showAlert('Please select a user to start a voice call.', 'error');
+        }
+    });
 });
 
 // Set up form event listeners
@@ -406,6 +474,7 @@ function setupFormEventListeners() {
 // Global variables
 let currentView = 'landing';
 let selectedSessionTab = 'browse';
+let selectedChatRecipient = null; // Stores the currently selected user for private chat
 
 // Navigation functions
 function showLandingPage() {
@@ -432,6 +501,10 @@ function showDashboard() {
     currentView = 'dashboard';
     updateDashboard();
     showSessionsTab('browse-sessions');
+    // Ensure user joins their private room for receiving DMs
+    if (window.appSocket && currentUser?.id) {
+        window.appSocket.emit('join-user', currentUser.id);
+    }
 }
 
 function showCreateSession() {
@@ -449,6 +522,79 @@ function showEditSession(sessionId) {
     loadSessionForEdit(sessionId);
 }
 
+function showVideoConference(sessionId, topic) {
+    hideAllPages();
+    document.getElementById('video-conference-page').classList.remove('hidden');
+    document.getElementById('conference-topic').textContent = topic;
+    currentView = 'video-conference';
+    
+    // Initialize Jitsi Meet
+    const domain = 'meet.jit.si'; // Using public Jitsi Meet instance
+    const options = {
+        roomName: `feynman-learn-${sessionId}`,
+        width: '100%',
+        height: '100%',
+        parentNode: document.querySelector('#jitsi-container'),
+        configOverwrite: {},
+        interfaceConfigOverwrite: {
+            // Optional: customize Jitsi Meet UI
+            DEFAULT_BACKGROUND_IMAGE: 'https://feynmanlearn.com/background.jpg',
+            APPLICATION_NAME: 'Feynman Learn',
+            NATIVE_APP_NAME: 'Feynman Learn',
+            TOOLBAR_BUTTONS: [
+                'microphone', 'camera', 'desktop', 'fullscreen',
+                'fodeviceselection', 'hangup', 'profile', 'chat', 'raisehand',
+                'sharedvideo', 'settings', 'tileview', 'toggle-camera'
+            ],
+        },
+    };
+    const api = new JitsiMeetExternalAPI(domain, options);
+
+    // Handle Jitsi API events (optional)
+    api.addEventListener('videoConferenceJoined', (response) => {
+        console.log('Jitsi conference joined', response);
+    });
+    api.addEventListener('readyToClose', () => {
+        console.log('Jitsi conference ready to close');
+        showDashboard(); // Go back to dashboard when conference ends
+    });
+}
+
+function startPrivateVideoCall(recipientId, recipientName) {
+    hideAllPages();
+    document.getElementById('video-conference-page').classList.remove('hidden');
+    document.getElementById('conference-topic').textContent = `Call with ${recipientName}`;
+    currentView = 'video-conference';
+
+    const domain = 'meet.jit.si';
+    const options = {
+        roomName: `feynman-learn-private-${currentUser.id}-${recipientId}`,
+        width: '100%',
+        height: '100%',
+        parentNode: document.querySelector('#jitsi-container'),
+        configOverwrite: {},
+        interfaceConfigOverwrite: {
+            DEFAULT_BACKGROUND_IMAGE: 'https://feynmanlearn.com/background.jpg',
+            APPLICATION_NAME: 'Feynman Learn',
+            NATIVE_APP_NAME: 'Feynman Learn',
+            TOOLBAR_BUTTONS: [
+                'microphone', 'camera', 'desktop', 'fullscreen',
+                'fodeviceselection', 'hangup', 'profile', 'chat', 'raisehand',
+                'sharedvideo', 'settings', 'tileview', 'toggle-camera'
+            ],
+        },
+    };
+    const api = new JitsiMeetExternalAPI(domain, options);
+
+    api.addEventListener('videoConferenceJoined', (response) => {
+        console.log('Jitsi private conference joined', response);
+    });
+    api.addEventListener('readyToClose', () => {
+        console.log('Jitsi private conference ready to close');
+        showDashboard();
+    });
+}
+
 function hideAllPages() {
     const pages = document.querySelectorAll('.page');
     pages.forEach(page => page.classList.add('hidden'));
@@ -458,12 +604,12 @@ function hideAllPages() {
 async function handleLogin(event) {
     event.preventDefault();
     const form = event.target;
-    const email = document.getElementById('login-email').value;
+    const identifier = document.getElementById('login-identifier').value;
     const password = document.getElementById('login-password').value;
 
     try {
         showAlert('Logging in...', 'info');
-        await login(email, password);
+        await login(identifier, password);
         showAlert('Login successful!', 'success');
         showDashboard();
     } catch (error) {
@@ -478,6 +624,8 @@ async function handleSignup(event) {
     const name = document.getElementById('signup-name').value;
     const email = document.getElementById('signup-email').value;
     const password = document.getElementById('signup-password').value;
+    const schoolGrade = document.getElementById('signup-school-grade').value;
+    const subjectInterests = document.getElementById('signup-subject-interests').value.split(',').map(item => item.trim()).filter(item => item !== '');
 
     // Clear any previous error styling
     document.getElementById('signup-email').classList.remove('form-field--error');
@@ -495,7 +643,7 @@ async function handleSignup(event) {
 
     try {
         showAlert('Creating account...', 'info');
-        await signup(name, email, password);
+        await signup(name, email, password, schoolGrade, subjectInterests);
         showAlert('Account created successfully!', 'success');
         
         // Clear the form on success
@@ -538,7 +686,6 @@ async function handleCreateSession(event) {
         date: document.getElementById('session-date').value,
         time: document.getElementById('session-time').value,
         maxParticipants: document.getElementById('session-capacity').value,
-        meetLink: document.getElementById('session-meet-link').value
     };
 
     try {
@@ -575,7 +722,6 @@ async function handleEditSession(event) {
         date: document.getElementById('edit-session-date').value,
         time: document.getElementById('edit-session-time').value,
         maxParticipants: document.getElementById('edit-session-capacity').value,
-        meetLink: document.getElementById('edit-session-meet-link').value
     };
 
     try {
@@ -649,7 +795,6 @@ function loadSessionForEdit(sessionId) {
     document.getElementById('edit-session-time').value = session.time || sessionDate.toTimeString().slice(0, 5);
     
     document.getElementById('edit-session-capacity').value = session.maxParticipants;
-    document.getElementById('edit-session-meet-link').value = session.meetLink || '';
 }
 
 async function handleEnrollInSession(sessionId) {
@@ -721,7 +866,14 @@ function showSessionsTab(tab) {
     });
     document.getElementById(tab).classList.remove('hidden');
 
-    updateSessionsList();
+    // Call specific update functions for each tab
+    if (tab === 'my-sessions' || tab === 'browse-sessions') {
+        updateSessionsList();
+    } else if (tab === 'chat') {
+        updateChatUI();
+    } else if (tab === 'notes') {
+        updateNotesUI();
+    }
 }
 
 async function updateSessionsList() {
@@ -784,8 +936,8 @@ function displaySessions(sessionsList, container, isOwner = false) {
             actionButton = '<span class="enrollment-status">Enrolled</span>';
         } else if (isFull) {
             actionButton = '<span class="enrollment-status">Full</span>';
-        } else if (session.meetLink && session.status === 'ongoing') {
-            actionButton = `<button class="btn btn--primary btn--sm" onclick="window.open('${session.meetLink}', '_blank')">Join Now</button>`;
+        } else if (session.status === 'ongoing') {
+            actionButton = `<button class="btn btn--primary btn--sm" onclick="showVideoConference('${session.id || session._id}', '${session.topic}')">Join Now</button>`;
         } else {
             actionButton = `<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`;
         }
@@ -880,3 +1032,733 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 console.log('Feynman Learn App Loaded');
+
+// New functions for Chat and Notes
+let chatUserSearchTimeout;
+let allUsernamesCache = null; // [{_id, username, name}]
+
+async function ensureAllUsernamesLoaded() {
+    if (allUsernamesCache) return allUsernamesCache;
+    try {
+        const data = await apiRequest('/users/all-usernames');
+        allUsernamesCache = (data.users || [])
+            .filter(u => u && typeof u.username === 'string' && u.username.length > 0)
+            .map(u => ({
+                _id: u._id,
+                username: u.username,
+                name: u.name
+            }));
+        return allUsernamesCache;
+    } catch (e) {
+        console.error('Failed to load all usernames:', e);
+        allUsernamesCache = [];
+        return allUsernamesCache;
+    }
+}
+
+function findPrefixRange(sortedArray, prefix) {
+    // Binary search lower and upper bounds for prefix on .username
+    let lo = 0, hi = sortedArray.length;
+    const p = prefix.toLowerCase();
+    // lower bound
+    while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (sortedArray[mid].username < p) lo = mid + 1; else hi = mid;
+    }
+    const start = lo;
+    // upper bound for prefix by next string after prefix
+    lo = 0; hi = sortedArray.length;
+    const next = p.slice(0, -1) + String.fromCharCode(p.charCodeAt(p.length - 1) + 1);
+    const upperKey = p + '\uffff'; // simpler: highest possible continuation
+    while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (sortedArray[mid].username <= upperKey) lo = mid + 1; else hi = mid;
+    }
+    const end = lo;
+    // filter to actual prefix match (defensive) and cap
+    const results = [];
+    for (let i = start; i < end && results.length < 10; i++) {
+        if (sortedArray[i].username.startsWith(p)) results.push(sortedArray[i]);
+        else break;
+    }
+    return results;
+}
+
+function updateChatUI() {
+    console.log('Updating chat UI...');
+
+    // Get references to main chat sections
+    const chatMainArea = document.getElementById('chat-main-area');
+    const chatNewMessageSection = document.getElementById('chat-new-message-section');
+    const activeChatWindow = document.getElementById('active-chat-window');
+    const existingChatsList = document.getElementById('existing-chats-list');
+    const startPrivateVideoCallBtn = document.getElementById('start-private-video-call-btn');
+
+    // Always show the main chat area when chat tab is active
+    chatMainArea?.classList.remove('hidden');
+
+    // By default, show existing chats and general chat
+    chatNewMessageSection?.classList.add('hidden');
+    activeChatWindow?.classList.remove('hidden');
+    selectedChatRecipient = null; // Ensure no recipient is selected initially
+    document.getElementById('chat-recipient-name').textContent = 'General Chat';
+    document.getElementById('chat-recipient-details').innerHTML = '';
+    document.getElementById('chat-messages').innerHTML = '';
+    loadGeneralChatHistory('general-chat');
+    startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button for general chat
+
+    // Update existing chats list
+    fetchAndDisplayExistingChats();
+
+    // Preload usernames for suggestions
+    ensureAllUsernamesLoaded();
+
+    // Attach event listeners if not already attached
+    const startNewChatBtn = document.getElementById('start-new-chat-btn');
+    if (startNewChatBtn && !startNewChatBtn.dataset.listenersAttached) {
+        startNewChatBtn.addEventListener('click', () => {
+            // Show new message section, hide active chat window
+            chatNewMessageSection?.classList.remove('hidden');
+            activeChatWindow?.classList.add('hidden');
+            document.getElementById('chat-user-search-input').value = ''; // Clear search input
+            document.getElementById('chat-user-suggestions').innerHTML = ''; // Clear suggestions
+            selectedChatRecipient = null;
+
+            // Remove active state from all existing chat items
+            document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
+            document.getElementById('chat-recipient-name').textContent = 'Select a user to chat';
+            document.getElementById('chat-recipient-details').innerHTML = '';
+            document.getElementById('chat-messages').innerHTML = '';
+            startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button
+        });
+        startNewChatBtn.dataset.listenersAttached = 'true';
+    }
+
+    const backToExistingChatsBtn = document.getElementById('back-to-existing-chats-btn');
+    if (backToExistingChatsBtn && !backToExistingChatsBtn.dataset.listenersAttached) {
+        backToExistingChatsBtn.addEventListener('click', () => {
+            // Hide new message section, show active chat window (revert to general chat)
+            chatNewMessageSection?.classList.add('hidden');
+            activeChatWindow?.classList.remove('hidden');
+            selectedChatRecipient = null;
+            document.getElementById('chat-recipient-name').textContent = 'General Chat';
+            document.getElementById('chat-recipient-details').innerHTML = '';
+            document.getElementById('chat-messages').innerHTML = '';
+            loadGeneralChatHistory('general-chat');
+
+            // Set general chat as active
+            document.querySelector('.existing-chat-item[data-chat-type="general"]')?.classList.add('active');
+            startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button
+        });
+        backToExistingChatsBtn.dataset.listenersAttached = 'true';
+    }
+
+    // Attach event listeners for chat user search input if not already attached
+    const chatUserSearchInput = document.getElementById('chat-user-search-input');
+    if (chatUserSearchInput && !chatUserSearchInput.dataset.listenersAttached) {
+        chatUserSearchInput.addEventListener('input', (e) => {
+            clearTimeout(chatUserSearchTimeout);
+            chatUserSearchTimeout = setTimeout(() => searchUsersForSuggestions(e.target.value), 300);
+        });
+        chatUserSearchInput.dataset.listenersAttached = 'true';
+    }
+}
+
+async function fetchAndDisplayExistingChats() {
+    const existingChatsListContainer = document.getElementById('existing-chats-list');
+    if (!existingChatsListContainer) return;
+
+    // Clear previous private chats, but keep General Chat
+    existingChatsListContainer.querySelectorAll('.existing-chat-item[data-chat-type="private"]').forEach(item => item.remove());
+
+    try {
+        const data = await apiRequest('/chat/recent');
+        const recentChats = data.recentChats || [];
+
+        if (recentChats.length === 0) {
+            // No private chats yet, just keep General Chat
+            return;
+        }
+
+        recentChats.forEach(user => {
+            const chatItem = document.createElement('li');
+            chatItem.classList.add('existing-chat-item');
+            chatItem.dataset.chatType = 'private';
+            chatItem.dataset.userId = user._id;
+            chatItem.innerHTML = `
+                <h4>${user.name}</h4>
+                <p>${user.schoolGrade || 'N/A'}</p>
+            `;
+            chatItem.addEventListener('click', () => selectExistingChat(user._id, user.name, user.schoolGrade, user.subjectInterests));
+            existingChatsListContainer.appendChild(chatItem);
+        });
+    } catch (error) {
+        console.error('Failed to fetch existing chats:', error);
+        showAlert('Failed to load existing chats: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+function selectExistingChat(userId, userName, schoolGrade, subjectInterests) {
+    const chatMainArea = document.getElementById('chat-main-area');
+    const chatNewMessageSection = document.getElementById('chat-new-message-section');
+    const activeChatWindow = document.getElementById('active-chat-window');
+
+    chatNewMessageSection?.classList.add('hidden');
+    activeChatWindow?.classList.remove('hidden');
+
+    if (userId === 'general-chat') {
+        selectedChatRecipient = null;
+        document.getElementById('chat-recipient-name').textContent = 'General Chat';
+        document.getElementById('chat-recipient-details').innerHTML = '';
+        loadGeneralChatHistory('general-chat');
+    } else {
+        selectedChatRecipient = { _id: userId, name: userName, schoolGrade, subjectInterests };
+        document.getElementById('chat-recipient-name').textContent = `Chat with ${userName}`;
+        document.getElementById('chat-recipient-details').innerHTML = `
+            <p>Grade: ${schoolGrade || 'N/A'}</p>
+            <p>Interests: ${subjectInterests?.join(', ') || 'No interests'}</p>
+        `;
+        loadPrivateChatHistory(userId);
+    }
+
+    // Update active styling in sidebar
+    document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
+    document.querySelector(`.existing-chat-item[data-user-id="${userId}"]`)?.classList.add('active');
+
+    // Show video call button for private chats
+    const startPrivateVideoCallBtn = document.getElementById('start-private-video-call-btn');
+    if (userId !== 'general-chat') {
+        startPrivateVideoCallBtn?.classList.remove('hidden');
+        document.getElementById('start-private-voice-call-btn')?.classList.remove('hidden');
+    } else {
+        startPrivateVideoCallBtn?.classList.add('hidden');
+        document.getElementById('start-private-voice-call-btn')?.classList.add('hidden');
+    }
+
+    // Hide suggestions after selection
+    document.getElementById('chat-user-suggestions').innerHTML = '';
+    document.getElementById('chat-user-search-input').value = '';
+}
+
+function resetChatUI() {
+    document.getElementById('chat-messages').innerHTML = '';
+    document.getElementById('chat-recipient-name').textContent = 'Select a user to chat';
+    document.getElementById('chat-recipient-details').innerHTML = '';
+    selectedChatRecipient = null;
+    // Clear active state from all chat items
+    document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
+    document.querySelectorAll('.user-suggestion-item').forEach(item => item.classList.remove('active'));
+}
+
+async function searchUsersForSuggestions(query) {
+    const userSuggestionsContainer = document.getElementById('chat-user-suggestions');
+    if (!userSuggestionsContainer) return;
+    userSuggestionsContainer.innerHTML = '';
+
+    if (query.trim() === '') {
+        return;
+    }
+    try {
+        const list = await ensureAllUsernamesLoaded();
+        // list already sorted by backend, but ensure sort just in case
+        const sorted = list
+            .slice()
+            .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
+        const results = findPrefixRange(sorted, query.toLowerCase());
+
+        if (results.length === 0) {
+            userSuggestionsContainer.innerHTML = '<li class="empty-state">No users found.</li>';
+            return;
+        }
+
+        results.forEach(user => {
+            const userElement = document.createElement('li');
+            userElement.classList.add('user-suggestion-item');
+            userElement.dataset.userId = user._id;
+            userElement.innerHTML = `
+                <h4>@${user.username}</h4>
+                <p>${user.name}</p>
+            `;
+            userElement.addEventListener('click', () => selectSuggestedUser(user));
+            userSuggestionsContainer.appendChild(userElement);
+        });
+    } catch (error) {
+        console.error('Failed to suggest usernames:', error);
+        showAlert('Failed to suggest usernames: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+function selectSuggestedUser(user) {
+    // This function is called when a user is selected from the search suggestions
+    selectedChatRecipient = user;
+
+    // Activate the main chat window and hide the new message section
+    document.getElementById('chat-new-message-section')?.classList.add('hidden');
+    document.getElementById('active-chat-window')?.classList.remove('hidden');
+
+    document.getElementById('chat-recipient-name').textContent = `Chat with ${user.name || '@'+user.username}`;
+    document.getElementById('chat-recipient-details').innerHTML = `
+        <p>Username: @${user.username || ''}</p>
+    `;
+    document.getElementById('chat-messages').innerHTML = '';
+    loadPrivateChatHistory(user._id); // Load private chat history with this user
+
+    // Update active styling in existing chats sidebar (if this user is in existing chats)
+    document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
+    document.querySelector(`.existing-chat-item[data-user-id="${user._id}"]`)?.classList.add('active');
+
+    // Show call buttons
+    document.getElementById('start-private-video-call-btn')?.classList.remove('hidden');
+    document.getElementById('start-private-voice-call-btn')?.classList.remove('hidden');
+
+    // Clear search input and suggestions
+    document.getElementById('chat-user-search-input').value = '';
+    document.getElementById('chat-user-suggestions').innerHTML = '';
+}
+
+async function loadGeneralChatHistory(sessionId) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    chatMessagesContainer.innerHTML = '';
+
+    try {
+        const data = await apiRequest(`/chat/session/${sessionId}`);
+        const messages = data.messages || [];
+        messages.forEach(message => displayChatMessage(message, false)); // Pass false for isPrivate
+
+        // Set general chat as active in sidebar
+        document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
+        document.querySelector('.existing-chat-item[data-chat-type="general"]')?.classList.add('active');
+
+    } catch (error) {
+        console.error('Error loading general chat history:', error);
+        showAlert('Failed to load general chat history: ' + (error.message || 'Unknown error'), 'error');
+    }
+    // Hide call buttons for general chat
+    document.getElementById('start-private-video-call-btn')?.classList.add('hidden');
+    document.getElementById('start-private-voice-call-btn')?.classList.add('hidden');
+}
+
+// Load private chat history
+async function loadPrivateChatHistory(recipientId) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    chatMessagesContainer.innerHTML = '';
+
+    try {
+        const data = await apiRequest(`/chat/private/${recipientId}`);
+        const messages = data.messages || [];
+        messages.forEach(message => displayChatMessage(message, true)); // Pass true for isPrivate
+    } catch (error) {
+        console.error('Error loading private chat history:', error);
+        showAlert('Failed to load private chat history: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+function displayChatMessage(message, isPrivateHint = undefined) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+
+    // Normalize fields to support both realtime payloads and DB-fetch payloads
+    const senderId = message.senderId || message.sender?.toString?.() || message.sender;
+    const recipientId = message.recipientId || message.recipient?.toString?.() || message.recipient;
+    const sessionId = message.sessionId || null;
+
+    // Determine if this is a private message
+    const isPrivateMsg = typeof isPrivateHint === 'boolean' ? isPrivateHint : Boolean(recipientId);
+
+    // Determine current chat context
+    const isGeneralChatActive = !selectedChatRecipient;
+    const isPrivateChatActive = Boolean(selectedChatRecipient && selectedChatRecipient._id);
+
+    let shouldDisplay = false;
+    if (isPrivateMsg) {
+        // Show only if this private message is between me and the selected recipient
+        if (isPrivateChatActive) {
+            const otherId = selectedChatRecipient._id?.toString();
+            const me = currentUser?.id?.toString();
+            const betweenUs = (
+                (senderId?.toString() === me && recipientId?.toString() === otherId) ||
+                (senderId?.toString() === otherId && recipientId?.toString() === me)
+            );
+            shouldDisplay = betweenUs;
+        }
+    } else {
+        // General chat: show only in general chat context
+        shouldDisplay = isGeneralChatActive && (sessionId === 'general-chat' || sessionId === null || typeof sessionId === 'undefined');
+    }
+
+    if (!shouldDisplay) return;
+
+    const messageElement = document.createElement('div');
+    messageElement.classList.add('chat-message');
+    if (senderId && senderId.toString() === currentUser?.id?.toString()) {
+        messageElement.classList.add('chat-message--own');
+    }
+    messageElement.innerHTML = `<strong>${message.senderName}:</strong> ${message.text}`;
+    chatMessagesContainer.appendChild(messageElement);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight; // Auto-scroll to bottom
+}
+
+function sendChatMessage(messageText) {
+    if (messageText.trim() === '') return;
+    if (!currentUser) {
+        showAlert('Please log in to send messages.', 'error');
+        return;
+    }
+
+    const message = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderUsername: currentUser.username,
+        text: messageText,
+        timestamp: new Date().toISOString(),
+    };
+
+    if (selectedChatRecipient) {
+        message.recipientId = selectedChatRecipient._id;
+        message.recipientUsername = selectedChatRecipient.username;
+        // Use global socket reference
+        window.appSocket?.emit('chat-message', message);
+        // Optimistically display in the current private chat view
+        displayChatMessage({ ...message }, true);
+    } else {
+        // Send to general chat
+        const outgoing = { ...message, sessionId: 'general-chat' };
+        window.appSocket?.emit('chat-message', outgoing);
+        // Optimistically display in general chat view
+        displayChatMessage(outgoing, false);
+    }
+}
+
+function updateNotesUI() {
+    console.log('Updating notes UI...');
+    fetchAndDisplayAllNotes(); // Changed to fetch all notes
+
+    // Event listeners for notes
+    document.getElementById('create-note-btn')?.addEventListener('click', () => {
+        showNoteEditor();
+    });
+    document.getElementById('cancel-note-btn')?.addEventListener('click', () => {
+        hideNoteEditor();
+    });
+    document.getElementById('save-note-btn')?.addEventListener('click', handleSaveNote);
+    document.getElementById('export-notes-pdf-btn')?.addEventListener('click', exportNotesToPdf);
+
+    document.getElementById('import-pdf-btn')?.addEventListener('click', () => {
+        document.getElementById('import-pdf-input').click();
+    });
+    document.getElementById('import-pdf-input')?.addEventListener('change', handlePdfImport);
+}
+
+async function fetchAndDisplayNotes() {
+    const notesListContainer = document.getElementById('notes-list');
+    if (!notesListContainer) return;
+    notesListContainer.innerHTML = ''; // Clear previous notes
+
+    try {
+        const data = await apiRequest('/notes'); // This endpoint now fetches all notes (private and public)
+        const notes = data.notes || [];
+
+        if (notes.length === 0) {
+            notesListContainer.innerHTML = '<p class="empty-state">No notes found. Create one!</p>';
+            return;
+        }
+
+        notes.forEach(note => {
+            const noteElement = document.createElement('div');
+            noteElement.classList.add('note-card');
+            if (note.isPublic) {
+                noteElement.classList.add('note-card--public');
+            }
+            noteElement.innerHTML = `
+                <h3>${note.title} ${note.isPublic ? '<span class="note-public-badge">Public</span>' : ''}</h3>
+                <p>${note.content}</p>
+                <div class="note-actions">
+                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--secondary" onclick="editNote('${note._id}')">Edit</button>` : ''}
+                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--danger" onclick="deleteNote('${note._id}')">Delete</button>` : ''}
+                    <button class="btn btn--sm btn--primary" onclick="downloadNote('${note._id}', '${note.title}')">Download</button>
+                </div>
+            `;
+            notesListContainer.appendChild(noteElement);
+        });
+    } catch (error) {
+        console.error('Failed to fetch notes:', error);
+        showAlert('Failed to load notes: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+// Renamed from fetchAndDisplayNotes to fetchAndDisplayAllNotes
+async function fetchAndDisplayAllNotes() {
+    const notesListContainer = document.getElementById('notes-list');
+    if (!notesListContainer) return;
+    notesListContainer.innerHTML = ''; // Clear previous notes
+
+    try {
+        const privateNotesData = await apiRequest('/notes'); // Assuming this fetches private notes
+        const publicNotesData = await apiRequest('/notes/public'); // Assuming this fetches public notes
+
+        const allNotes = [...(privateNotesData.notes || []), ...(publicNotesData.notes || [])];
+
+        if (allNotes.length === 0) {
+            notesListContainer.innerHTML = '<p class="empty-state">No notes found. Create one!</p>';
+            return;
+        }
+
+        allNotes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+        allNotes.forEach(note => {
+            const noteElement = document.createElement('div');
+            noteElement.classList.add('note-card');
+            if (note.isPublic) {
+                noteElement.classList.add('note-card--public');
+            }
+            noteElement.innerHTML = `
+                <h3>${note.title} ${note.isPublic ? '<span class="note-public-badge">Public</span>' : ''}</h3>
+                <p>${note.content}</p>
+                <div class="note-actions">
+                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--secondary" onclick="editNote('${note._id}')">Edit</button>` : ''}
+                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--danger" onclick="deleteNote('${note._id}')">Delete</button>` : ''}
+                    <button class="btn btn--sm btn--primary" onclick="downloadNote('${note._id}', '${note.title}')">Download</button>
+                </div>
+            `;
+            notesListContainer.appendChild(noteElement);
+        });
+    } catch (error) {
+        console.error('Failed to fetch all notes:', error);
+        showAlert('Failed to load notes: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+// Old updateGlobalNotesUI function (will be removed)
+// async function updateGlobalNotesUI() {
+//     const globalNotesListContainer = document.getElementById('global-notes-list');
+//     if (!globalNotesListContainer) return;
+//     globalNotesListContainer.innerHTML = ''; // Clear previous notes
+
+//     try {
+//         const data = await apiRequest('/notes/public');
+//         const notes = data.notes || [];
+
+//         if (notes.length === 0) {
+//             globalNotesListContainer.innerHTML = '<p class="empty-state">No public notes found.</p>';
+//             return;
+//         }
+
+//         notes.forEach(note => {
+//             const noteElement = document.createElement('div');
+//             noteElement.classList.add('note-card');
+//             noteElement.innerHTML = `
+//                 <h3>${note.title}</h3>
+//                 <p>${note.content.substring(0, 100)}...</p>
+//                 <div class="note-actions">
+//                     <button class="btn btn--sm btn--primary" onclick="downloadNote('${note._id}', '${note.title}')">Download</button>
+//                 </div>
+//             `;
+//             globalNotesListContainer.appendChild(noteElement);
+//         });
+//     } catch (error) {
+//         console.error('Failed to fetch public notes:', error);
+//         showAlert('Failed to load public notes: ' + (error.message || 'Unknown error'), 'error');
+//     }
+// }
+
+let currentEditingNoteId = null;
+
+function showNoteEditor(note = null) {
+    document.getElementById('notes-list')?.classList.add('hidden');
+    document.getElementById('note-editor')?.classList.remove('hidden');
+    document.getElementById('create-note-btn')?.classList.add('hidden');
+    document.getElementById('export-notes-pdf-btn')?.classList.add('hidden');
+    document.getElementById('import-pdf-btn')?.classList.add('hidden');
+
+    const noteTitleInput = document.getElementById('note-title-input');
+    const noteContentInput = document.getElementById('note-content-input');
+
+    if (note) {
+        currentEditingNoteId = note._id;
+        noteTitleInput.value = note.title;
+        noteContentInput.value = note.content;
+    } else {
+        currentEditingNoteId = null;
+        noteTitleInput.value = '';
+        noteContentInput.value = '';
+    }
+}
+
+function hideNoteEditor() {
+    document.getElementById('notes-list')?.classList.remove('hidden');
+    document.getElementById('note-editor')?.classList.add('hidden');
+    document.getElementById('create-note-btn')?.classList.remove('hidden');
+    document.getElementById('export-notes-pdf-btn')?.classList.remove('hidden');
+    document.getElementById('import-pdf-btn')?.classList.remove('hidden');
+    currentEditingNoteId = null;
+}
+
+async function handleSaveNote() {
+    const title = document.getElementById('note-title-input').value;
+    const content = document.getElementById('note-content-input').value;
+
+    if (!title.trim() || !content.trim()) {
+        showAlert('Note title and content cannot be empty.', 'error');
+        return;
+    }
+
+    try {
+        showAlert('Saving note...', 'info');
+        if (currentEditingNoteId) {
+            // Update existing note
+            await apiRequest(`/notes/${currentEditingNoteId}`, {
+                method: 'PUT',
+                body: JSON.stringify({ title, content })
+            });
+            showAlert('Note updated successfully!', 'success');
+        } else {
+            // Create new note (default to not public)
+            await apiRequest('/notes', {
+                method: 'POST',
+                body: JSON.stringify({ title, content, isPublic: false })
+            });
+            showAlert('Note created successfully!', 'success');
+        }
+        hideNoteEditor();
+        fetchAndDisplayAllNotes(); // Changed to fetchAndDisplayAllNotes
+    } catch (error) {
+        console.error('Failed to save note:', error);
+        showAlert('Failed to save note: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+async function editNote(noteId) {
+    try {
+        const data = await apiRequest(`/notes/${noteId}`);
+        showNoteEditor(data.note);
+    } catch (error) {
+        console.error('Failed to fetch note for editing:', error);
+        showAlert('Failed to load note for editing: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+async function deleteNote(noteId) {
+    if (!confirm('Are you sure you want to delete this note?')) {
+        return;
+    }
+    try {
+        showAlert('Deleting note...', 'info');
+        await apiRequest(`/notes/${noteId}`, { method: 'DELETE' });
+        showAlert('Note deleted successfully!', 'success');
+        fetchAndDisplayAllNotes(); // Changed to fetchAndDisplayAllNotes
+    } catch (error) {
+        console.error('Failed to delete note:', error);
+        showAlert('Failed to delete note: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+function exportNotesToPdf() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+
+    const notesListContainer = document.getElementById('notes-list');
+    if (!notesListContainer) {
+        showAlert('No notes to export.', 'error');
+        return;
+    }
+
+    const notes = Array.from(notesListContainer.querySelectorAll('.note-card'));
+    if (notes.length === 0) {
+        showAlert('No notes found to export.', 'info');
+        return;
+    }
+
+    let yPos = 10;
+    doc.setFontSize(18);
+    doc.text("My Notes", 10, yPos);
+    yPos += 10;
+
+    doc.setFontSize(12);
+    notes.forEach((note, index) => {
+        const title = note.querySelector('h3')?.textContent || `Note ${index + 1}`;
+        const content = note.querySelector('p')?.textContent || '';
+
+        yPos += 10; // Spacing before each note
+        if (yPos > 280) { // Check if new page is needed
+            doc.addPage();
+            yPos = 10;
+        }
+
+        doc.setFontSize(14);
+        doc.text(title, 10, yPos);
+        yPos += 7;
+
+        doc.setFontSize(10);
+        const splitContent = doc.splitTextToSize(content, 180); // Wrap text
+        doc.text(splitContent, 10, yPos);
+        yPos += (splitContent.length * 7) + 5; // Adjust yPos based on content height
+    });
+
+    doc.save('my-feynman-notes.pdf');
+    showAlert('Notes exported to PDF successfully!', 'success');
+}
+
+async function handlePdfImport(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const arrayBuffer = e.target.result;
+        // Initialize PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        try {
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            console.log('PDF loaded successfully, number of pages:', pdf.numPages);
+            let fullText = '';
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                fullText += textContent.items.map(item => item.str).join(' ') + '\n\n';
+            }
+            console.log('Extracted full text:', fullText.substring(0, 500)); // Log first 500 chars
+
+            // Automatically create a new note with the PDF content and make it public
+            const pdfFileName = file.name.replace('.pdf', '');
+            const noteTitle = `Imported from ${pdfFileName}`;
+            const noteContent = fullText.substring(0, 5000); // Limit to 5000 characters for example
+
+            await apiRequest('/notes', {
+                method: 'POST',
+                body: JSON.stringify({ title: noteTitle, content: noteContent, isPublic: true })
+            });
+            showAlert('PDF imported and saved as a new public note!', 'success');
+            fetchAndDisplayAllNotes(); // Changed to fetchAndDisplayAllNotes
+        } catch (error) {
+            console.error('Error processing PDF:', error);
+            showAlert('Failed to import PDF: ' + (error.message || 'Unknown error'), 'error');
+        }
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+async function downloadNote(noteId, noteTitle) {
+    try {
+        const response = await fetch(`${API_BASE_URL}/notes/download/${noteId}`, { credentials: 'include' });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to download note');
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${noteTitle}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        showAlert('Note downloaded successfully!', 'success');
+    } catch (error) {
+        console.error('Error downloading note:', error);
+        showAlert('Failed to download note: ' + (error.message || 'Unknown error'), 'error');
+    }
+}

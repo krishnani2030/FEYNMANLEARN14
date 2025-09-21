@@ -6,7 +6,7 @@
   "scripts": {
     "start": "cd backend && npm start",
     "frontend": "cd frontend && npm run dev",
-    "dev": "PORT=5050 nodemon server.js",
+    "dev": "cd backend && PORT=5050 nodemon server.js",
     "test": "echo 'No tests defined yet'",
     "run": "concurrently \"npm run dev\" \"npm run frontend\"",
     "seed": "cd backend && npm run seed",
@@ -26,5 +26,8 @@
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
   }
 }
