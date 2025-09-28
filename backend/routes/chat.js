@@ -1,7 +1,40 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
 const Message = require('../models/Message');
-const { authMiddleware: protect } = require('../middleware/auth');
+const { protect } = require('../middleware/auth');
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, path.join(__dirname, '../uploads/chat'));
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = [
+            'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+            'application/pdf',
+            'audio/wav', 'audio/mp3', 'audio/ogg', 'audio/webm'
+        ];
+        
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('File type not supported'), false);
+        }
+    }
+});
 const User = require('../models/User'); // Import User model
 const mongoose = require('mongoose');
 
@@ -149,6 +182,29 @@ router.get('/bot-messages', protect, async (req, res) => {
     } catch (error) {
         console.error('Error fetching bot messages:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// File upload endpoint
+router.post('/upload', protect, upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        // Create file URL
+        const fileUrl = `/uploads/chat/${req.file.filename}`;
+        
+        res.json({
+            success: true,
+            fileUrl: fileUrl,
+            fileName: req.file.originalname,
+            fileSize: req.file.size,
+            mimeType: req.file.mimetype
+        });
+    } catch (error) {
+        console.error('File upload error:', error);
+        res.status(500).json({ error: 'File upload failed' });
     }
 });
 

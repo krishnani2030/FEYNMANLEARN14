@@ -534,6 +534,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         chatMessageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault(); // Prevent form submission
+                handleTypingStop(); // Stop typing indicator before sending
                 sendChatMessage();
             }
         });
@@ -543,6 +544,20 @@ document.addEventListener('DOMContentLoaded', async function() {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
             }
+        });
+        
+        // Handle typing indicators
+        chatMessageInput.addEventListener('input', (e) => {
+            if (e.target.value.trim() !== '') {
+                handleTypingStart();
+            } else {
+                handleTypingStop();
+            }
+        });
+        
+        // Stop typing when input loses focus
+        chatMessageInput.addEventListener('blur', () => {
+            handleTypingStop();
         });
     }
 
@@ -688,6 +703,12 @@ async function initializeNewSystems() {
             mediasoupClient = window.mediasoupClient;
             await mediasoupClient.init();
             console.log('✅ Mediasoup client initialized');
+        }
+        
+        // Initialize File Sharing
+        if (window.fileSharing) {
+            window.fileSharing.init();
+            console.log('✅ File sharing initialized');
         }
         
     } catch (error) {
@@ -2150,12 +2171,15 @@ function displayChatMessage(message) {
         if (isBot && currentChatRecipient._id === 'feynman-bot') {
             // Show bot message in bot chat
         } else if (!isBot) {
-            // For regular messages, check if it's between current user and selected recipient
-            const isRelevant = (message.senderId === currentUser?.id && message.recipientId === currentChatRecipient._id) ||
-                             (message.senderId === currentChatRecipient._id && message.recipientId === currentUser?.id) ||
-                             (message.sender === currentUser?.id && message.recipient === currentChatRecipient._id) ||
-                             (message.sender === currentChatRecipient._id && message.recipient === currentUser?.id);
-            if (!isRelevant) return;
+            const messageRecipientId = message.recipientId || message.recipient;
+            const messageSenderId = message.senderId || message.sender;
+            
+            // Check if this message belongs to the current chat
+            const belongsToCurrentChat = 
+                (messageRecipientId === currentChatRecipient._id && messageSenderId === currentUser?.id) ||
+                (messageSenderId === currentChatRecipient._id && messageRecipientId === currentUser?.id);
+            
+            if (!belongsToCurrentChat) return;
         } else {
             return; // Don't show bot messages in regular chats
         }
@@ -2164,12 +2188,34 @@ function displayChatMessage(message) {
     const messageElement = document.createElement('div');
     messageElement.classList.add('chat-message');
     
+    // Add message ID for status tracking
+    if (message.messageId || message.localId) {
+        messageElement.setAttribute('data-message-id', message.messageId || message.localId);
+    }
+    
     if (isBot) {
         messageElement.classList.add('chat-message--bot');
         messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
     } else if (isOwn) {
         messageElement.classList.add('chat-message--own');
         messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
+        
+        // Add message status for own messages
+        setTimeout(() => {
+            addMessageStatus(messageElement, 'sent');
+            
+            // Simulate delivery status after 1 second
+            setTimeout(() => {
+                addMessageStatus(messageElement, 'delivered');
+            }, 1000);
+            
+            // Simulate read status after 3 seconds (if recipient is online)
+            if (ablyChat && ablyChat.onlineUsers.has(currentChatRecipient?._id)) {
+                setTimeout(() => {
+                    addMessageStatus(messageElement, 'read');
+                }, 3000);
+            }
+        }, 100);
     } else {
         messageElement.classList.add('chat-message--other');
         messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
@@ -3508,6 +3554,178 @@ function updateCallButtonAvailability(sessionId, sessionDate, sessionTime) {
             callButton.title = `Available in ${timeUntil.hours}h ${timeUntil.minutes}m (15 minutes before session)`;
             callButton.className = 'btn btn--secondary btn--sm call-btn disabled';
         }
+    }
+}
+
+// Typing indicator functions
+let typingTimeout = null;
+let isCurrentlyTyping = false;
+
+function handleTypingStart() {
+    if (!currentChatRecipient || !ablyChat || !isAblyInitialized) return;
+    
+    if (!isCurrentlyTyping) {
+        isCurrentlyTyping = true;
+        const channelName = ablyChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
+        ablyChat.sendTypingIndicator(channelName, true);
+    }
+    
+    // Clear existing timeout
+    if (typingTimeout) {
+        clearTimeout(typingTimeout);
+    }
+    
+    // Set timeout to stop typing indicator
+    typingTimeout = setTimeout(() => {
+        handleTypingStop();
+    }, 3000);
+}
+
+function handleTypingStop() {
+    if (!currentChatRecipient || !ablyChat || !isAblyInitialized) return;
+    
+    if (isCurrentlyTyping) {
+        isCurrentlyTyping = false;
+        const channelName = ablyChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
+        ablyChat.sendTypingIndicator(channelName, false);
+    }
+    
+    if (typingTimeout) {
+        clearTimeout(typingTimeout);
+        typingTimeout = null;
+    }
+}
+
+// Show typing indicator in chat
+function showTypingIndicator(userName) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    
+    // Remove existing typing indicator
+    const existingIndicator = chatMessagesContainer.querySelector('.typing-indicator');
+    if (existingIndicator) {
+        existingIndicator.remove();
+    }
+    
+    // Create new typing indicator
+    const typingIndicator = document.createElement('div');
+    typingIndicator.className = 'typing-indicator';
+    typingIndicator.innerHTML = `
+        <span>${userName} is typing</span>
+        <div class="typing-dots">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+    `;
+    
+    chatMessagesContainer.appendChild(typingIndicator);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+}
+
+// Hide typing indicator
+function hideTypingIndicator() {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    
+    const typingIndicator = chatMessagesContainer.querySelector('.typing-indicator');
+    if (typingIndicator) {
+        typingIndicator.remove();
+    }
+}
+
+// Update online status in chat header
+function updateOnlineStatus(userId, isOnline, isTyping = false) {
+    if (!currentChatRecipient || currentChatRecipient._id !== userId) return;
+    
+    const chatRecipientDetails = document.getElementById('chat-recipient-details');
+    if (!chatRecipientDetails) return;
+    
+    let statusHtml = '';
+    if (isTyping) {
+        statusHtml = `
+            <div class="online-status">
+                <div class="status-dot status-dot--typing"></div>
+                <span>typing...</span>
+            </div>
+        `;
+    } else if (isOnline) {
+        statusHtml = `
+            <div class="online-status">
+                <div class="status-dot status-dot--online"></div>
+                <span>online</span>
+            </div>
+        `;
+    } else {
+        statusHtml = `
+            <div class="online-status">
+                <div class="status-dot status-dot--offline"></div>
+                <span>offline</span>
+            </div>
+        `;
+    }
+    
+    chatRecipientDetails.innerHTML = `
+        <p>@${currentChatRecipient.username || currentChatRecipient.email}</p>
+        ${statusHtml}
+    `;
+}
+
+// Add message status (ticks) to message
+function addMessageStatus(messageElement, status = 'sent') {
+    const existingStatus = messageElement.querySelector('.message-status');
+    if (existingStatus) {
+        existingStatus.remove();
+    }
+    
+    let ticksHtml = '';
+    switch (status) {
+        case 'sent':
+            ticksHtml = '<div class="message-ticks"><div class="tick"></div></div>';
+            break;
+        case 'delivered':
+            ticksHtml = '<div class="message-ticks"><div class="tick tick--delivered"></div><div class="tick tick--delivered"></div></div>';
+            break;
+        case 'read':
+            ticksHtml = '<div class="message-ticks"><div class="tick tick--read"></div><div class="tick tick--read"></div></div>';
+            break;
+    }
+    
+    const statusElement = document.createElement('div');
+    statusElement.className = 'message-status';
+    statusElement.innerHTML = `
+        ${ticksHtml}
+        <span class="message-timestamp">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+    `;
+    
+    messageElement.appendChild(statusElement);
+}
+
+// Handle presence updates from Ably
+function handlePresenceUpdate(presence) {
+    const { type, userId, data } = presence;
+    
+    switch (type) {
+        case 'online':
+        case 'enter':
+            updateOnlineStatus(userId, true);
+            break;
+        case 'offline':
+        case 'leave':
+            updateOnlineStatus(userId, false);
+            hideTypingIndicator();
+            break;
+        case 'update':
+            if (data && data.typing) {
+                updateOnlineStatus(userId, true, true);
+                if (currentChatRecipient && currentChatRecipient._id === userId) {
+                    showTypingIndicator(currentChatRecipient.name);
+                }
+            } else {
+                updateOnlineStatus(userId, true, false);
+                hideTypingIndicator();
+            }
+            break;
     }
 }
 
