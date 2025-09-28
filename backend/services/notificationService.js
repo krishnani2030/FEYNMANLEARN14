@@ -132,100 +132,12 @@ const notifySessionStart = async (sessionId) => {
         // Mark notification as sent
         session.startNotificationSent = true;
         await session.save();
-
     } catch (error) {
         console.error('Error sending session start notifications:', error);
     }
 };
 
-// Send session reminder (15 minutes before)
-const notifySessionReminder = async (sessionId) => {
-    try {
-        const session = await Session.findById(sessionId)
-            .populate('creator', 'name email _id')
-            .populate('participants.user', 'name email _id');
-
-        if (!session || session.notificationSent) {
-            return;
-        }
-
-        console.log(`Sending 15-min reminder for session: ${session.topic}`);
-
-        const payload = { type: 'session-reminder', sessionId: session._id.toString(), topic: session.topic, date: session.date, minutes: 15 };
-        if (ioInstance) {
-            ioInstance.to(session.creator._id.toString()).emit('session-notification', payload);
-            session.participants.forEach(p => ioInstance.to(p.user._id.toString()).emit('session-notification', payload));
-        }
-
-        // Send Feynman bot message to each participant
-        const Message = require('../models/Message');
-        const botMessage = `🤖 Feynman Learn: Your session "${session.topic}" starts in 15 minutes! Get ready to join.`;
-        
-        // Send to creator
-        const creatorMessage = new Message({
-            sessionId: null,
-            sender: null, // Bot message
-            senderName: 'Feynman Bot',
-            senderUsername: 'feynman_bot',
-            text: botMessage,
-            recipient: session.creator._id,
-            recipientUsername: session.creator.username || session.creator.email,
-        });
-        await creatorMessage.save();
-        
-        if (ioInstance) {
-            ioInstance.to(session.creator._id.toString()).emit('chat-message', {
-                _id: creatorMessage._id.toString(),
-                senderId: 'bot',
-                senderName: 'Feynman Bot',
-                senderUsername: 'feynman_bot',
-                text: botMessage,
-                timestamp: creatorMessage.timestamp,
-                recipientId: session.creator._id.toString(),
-                isBot: true
-            });
-        }
-
-        // Send to participants
-        for (const p of session.participants) {
-            const participantMessage = new Message({
-                sessionId: null,
-                sender: null, // Bot message
-                senderName: 'Feynman Bot',
-                senderUsername: 'feynman_bot',
-                text: botMessage,
-                recipient: p.user._id,
-                recipientUsername: p.user.username || p.user.email,
-            });
-            await participantMessage.save();
-            
-            if (ioInstance) {
-                ioInstance.to(p.user._id.toString()).emit('chat-message', {
-                    _id: participantMessage._id.toString(),
-                    senderId: 'bot',
-                    senderName: 'Feynman Bot',
-                    senderUsername: 'feynman_bot',
-                    text: botMessage,
-                    timestamp: participantMessage.timestamp,
-                    recipientId: p.user._id.toString(),
-                    isBot: true
-                });
-            }
-        }
-
-        await sendEmail(session.creator.email, `Reminder: ${session.topic} in 15 minutes`, `Your session "${session.topic}" starts in 15 minutes.`);
-        for (const p of session.participants) {
-            await sendEmail(p.user.email, `Reminder: ${session.topic} in 15 minutes`, `The session "${session.topic}" starts in 15 minutes.`);
-        }
-
-        // Mark reminder as sent
-        session.notificationSent = true;
-        await session.save();
-
-    } catch (error) {
-        console.error('Error sending session reminders:', error);
-    }
-};
+// Duplicate function removed - using the original notifySessionReminder function above
 
 // Send meeting link notification (5 minutes before)
 const notifyMeetingLink = async (sessionId) => {
@@ -269,6 +181,5 @@ module.exports = {
     sendFeynmanBotNotification,
     notifySessionCreated,
     notifySessionEnrollment,
-    notifySessionReminder,
     setSocketIo,
 };

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mediasoupService = require('../services/mediasoupService');
-const authMiddleware = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // Get router RTP capabilities for a session
 router.get('/sessions/:sessionId/rtp-capabilities', authMiddleware, async (req, res) => {

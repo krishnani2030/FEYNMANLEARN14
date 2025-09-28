@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const ablyService = require('../services/ablyService');
-const authMiddleware = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // Generate Ably token for authenticated user
 router.post('/token', authMiddleware, async (req, res) => {

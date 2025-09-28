@@ -161,8 +161,14 @@ async function getSessions() {
         console.log('Fetching sessions from API...');
         const data = await apiRequest('/sessions');
         console.log('Sessions API response:', data);
-        sessions = data.sessions || [];
+        
+        if (!data) {
+            throw new Error('No data received from API');
+        }
+        
+        sessions = data.sessions || data || [];
         console.log('Loaded sessions:', sessions.length, 'sessions');
+        console.log('First session sample:', sessions[0]);
         return sessions;
     } catch (error) {
         console.error('Failed to fetch sessions:', error);
@@ -403,7 +409,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     });
 
     socket.on('chat-message', (message) => {
-        console.log('Received chat message:', message);
+        console.log('🔔 Received chat message:', message);
+        console.log('Current chat recipient:', currentChatRecipient);
+        console.log('Current user ID:', currentUser?.id);
         
         // Validate message
         if (!message || !message.text || !message.senderName) {
@@ -438,6 +446,10 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         } else {
             console.log('Processing regular message for display');
+            
+            // TEMPORARY: Show alert for any received message to debug
+            showAlert(`📨 Received: "${message.text}" from ${message.senderName}`, 'info');
+            
             displayChatMessage(message);
             
             // Update chat list if this is for current chat
@@ -1410,9 +1422,15 @@ Your session is now live and students can start enrolling. I'll notify you when 
         // Reset form
         form.reset();
 
-        // Refresh sessions list and update UI
+        // Refresh sessions list and update UI immediately
         await getSessions();
         updateSessionsList();
+        
+        // Also refresh user sessions specifically
+        await getUserSessions();
+        
+        // Switch to My Sessions tab to show the newly created session
+        showSessionsTab('my-sessions');
 
         // Redirect to dashboard after a delay
         setTimeout(() => {
@@ -1623,6 +1641,7 @@ function showSessionsTab(tab) {
 
 async function updateSessionsList() {
     console.log('Updating sessions list for tab:', selectedSessionTab);
+    console.log('Current user:', currentUser?.id);
     
     if (selectedSessionTab === 'browse-sessions') {
         // Show all sessions
@@ -1630,12 +1649,20 @@ async function updateSessionsList() {
         console.log('Browse sessions container found:', !!container);
         
         try {
+            if (!container) {
+                console.error('Browse sessions container not found!');
+                return;
+            }
+            container.innerHTML = '<p class="loading-message">Loading sessions...</p>';
             const allSessions = await getSessions();
             console.log('Got sessions for browse:', allSessions.length);
+            console.log('Sessions data:', allSessions);
             displaySessions(allSessions, container);
         } catch (error) {
             console.error('Error loading browse sessions:', error);
-            container.innerHTML = '<p class="empty-state">Failed to load sessions. Please try again.</p>';
+            if (container) {
+                container.innerHTML = '<p class="error-message">Failed to load sessions. Please try again.</p>';
+            }
         }
     } else if (selectedSessionTab === 'my-sessions') {
         // Show user's sessions
@@ -1643,30 +1670,71 @@ async function updateSessionsList() {
         console.log('My sessions container found:', !!container);
         
         try {
+            if (!container) {
+                console.error('My sessions container not found!');
+                return;
+            }
+            container.innerHTML = '<p class="loading-message">Loading your sessions...</p>';
             const userSessions = await getUserSessions();
             console.log('Got user sessions:', userSessions.length);
+            console.log('User sessions data:', userSessions);
             displaySessions(userSessions, container, true);
         } catch (error) {
             console.error('Error loading user sessions:', error);
             // Fallback to filtering from all sessions
-            const allSessions = await getSessions();
-            const userSessions = allSessions.filter(s => 
-                s.creatorId === currentUser?.id || s.creator === currentUser?.id ||
-                (s.creator && s.creator._id === currentUser?.id)
-            );
-            console.log('Fallback user sessions:', userSessions.length);
-            displaySessions(userSessions, container, true);
+            try {
+                const allSessions = await getSessions();
+                console.log('All sessions for fallback:', allSessions.length);
+                const userSessions = allSessions.filter(s => {
+                    const isCreator = s.creatorId === currentUser?.id || 
+                                    s.creator === currentUser?.id ||
+                                    (s.creator && s.creator._id === currentUser?.id);
+                    const isEnrolled = s.participants && s.participants.some(p => {
+                        const participantId = typeof p === 'string' ? p : 
+                                             p.user ? (typeof p.user === 'string' ? p.user : p.user._id) : 
+                                             p._id;
+                        return participantId === currentUser?.id;
+                    });
+                    return isCreator || isEnrolled;
+                });
+                console.log('Fallback user sessions:', userSessions.length);
+                displaySessions(userSessions, container, true);
+            } catch (fallbackError) {
+                console.error('Fallback also failed:', fallbackError);
+                if (container) {
+                    container.innerHTML = '<p class="error-message">Failed to load sessions. Please try again.</p>';
+                }
+            }
         }
     }
 }
 
 function displaySessions(sessionsList, container, isOwner = false) {
+    console.log('displaySessions called with:', {
+        sessionsList: sessionsList,
+        sessionsLength: sessionsList?.length,
+        container: container,
+        isOwner: isOwner
+    });
+    
+    if (!container) {
+        console.error('Container is null in displaySessions');
+        return;
+    }
+    
     if (!sessionsList || sessionsList.length === 0) {
+        console.log('No sessions to display');
         container.innerHTML = '<p class="empty-state">No sessions found.</p>';
         return;
     }
 
     container.innerHTML = sessionsList.map(session => {
+        // Check if current user is the creator
+        const isCreator = session.isCreator || 
+                         session.creatorId === currentUser?.id || 
+                         session.creator === currentUser?.id ||
+                         (session.creator && session.creator._id === currentUser?.id);
+        
         // Check enrollment status more reliably
         const isEnrolled = session.isEnrolled || (session.participants && session.participants.some(p => {
             const participantId = typeof p === 'string' ? p : 
@@ -1694,7 +1762,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
         } else if (isFull) {
             actionButton = '<span class="enrollment-status">Full</span>';
         } else if (session.status === 'ongoing') {
-            actionButton = `<button class="btn btn--primary btn--sm" onclick="showVideoConference('${session.id || session._id}', '${session.topic.replace(/'/g, "\\'")}')">Join Now</button>`;
+            actionButton = `<button class="btn btn--primary btn--sm" onclick="showVideoConference('${session.id || session._id}', '${session.topic.replace(/'/g, "\\'")}')"}>Join Now</button>`;
         } else {
             actionButton = `<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`;
         }
@@ -1707,7 +1775,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
             <div class="session-card" data-session-id="${session.id || session._id}">
                 <div class="session-header">
                     <h3>${session.topic}</h3>
-                    <span class="session-level">${session.level}</span>
+                    <span class="session-level">${displayLevel}</span>
                 </div>
                 <div class="session-details">
                     <p><strong>Creator:</strong> ${session.creator?.name || session.creatorName || 'Unknown'}</p>
@@ -2160,15 +2228,29 @@ async function loadChatHistory(recipientId) {
 }
 
 function displayChatMessage(message) {
+    console.log('📱 displayChatMessage called with:', message);
+    
     const chatMessagesContainer = document.getElementById('chat-messages');
-    if (!chatMessagesContainer) return;
+    if (!chatMessagesContainer) {
+        console.log('❌ No chat messages container found');
+        return;
+    }
     
     const isOwn = message.senderId === currentUser?.id || message.sender === currentUser?.id;
     const isBot = message.senderId === 'bot' || message.isBot || message.senderName === 'Feynman Bot';
     
+    console.log('Message analysis:', {
+        isOwn,
+        isBot,
+        currentChatRecipient: currentChatRecipient?._id,
+        messageSenderId: message.senderId,
+        messageRecipientId: message.recipientId
+    });
+    
     // Only display if this is the current chat
     if (currentChatRecipient) {
         if (isBot && currentChatRecipient._id === 'feynman-bot') {
+            console.log('✅ Showing bot message in bot chat');
             // Show bot message in bot chat
         } else if (!isBot) {
             const messageRecipientId = message.recipientId || message.recipient;
@@ -2179,10 +2261,25 @@ function displayChatMessage(message) {
                 (messageRecipientId === currentChatRecipient._id && messageSenderId === currentUser?.id) ||
                 (messageSenderId === currentChatRecipient._id && messageRecipientId === currentUser?.id);
             
-            if (!belongsToCurrentChat) return;
+            console.log('Chat filtering:', {
+                messageRecipientId,
+                messageSenderId,
+                currentChatRecipientId: currentChatRecipient._id,
+                currentUserId: currentUser?.id,
+                belongsToCurrentChat
+            });
+            
+            if (!belongsToCurrentChat) {
+                console.log('❌ Message does not belong to current chat, skipping');
+                return;
+            }
+            console.log('✅ Message belongs to current chat, displaying');
         } else {
+            console.log('❌ Bot message in regular chat, skipping');
             return; // Don't show bot messages in regular chats
         }
+    } else {
+        console.log('⚠️ No current chat recipient, displaying anyway');
     }
     
     const messageElement = document.createElement('div');
@@ -2209,12 +2306,10 @@ function displayChatMessage(message) {
                 addMessageStatus(messageElement, 'delivered');
             }, 1000);
             
-            // Simulate read status after 3 seconds (if recipient is online)
-            if (ablyChat && ablyChat.onlineUsers.has(currentChatRecipient?._id)) {
-                setTimeout(() => {
-                    addMessageStatus(messageElement, 'read');
-                }, 3000);
-            }
+            // Simulate read status after 3 seconds
+            setTimeout(() => {
+                addMessageStatus(messageElement, 'read');
+            }, 3000);
         }, 100);
     } else {
         messageElement.classList.add('chat-message--other');
@@ -2238,46 +2333,48 @@ async function sendChatMessage() {
     console.log('Sending chat message to:', currentChatRecipient.name);
     
     try {
-        // Use Ably if available, fallback to Socket.IO
-        if (ablyChat && isAblyInitialized) {
-            const message = await ablyChat.sendPrivateMessage(
-                currentChatRecipient._id,
-                messageText
-            );
-            
-            // Optimistically display the message immediately
-            displayChatMessage(message);
-            
-            console.log('✅ Message sent via Ably');
-        } else {
-            // Fallback to Socket.IO
-            const message = {
-                senderId: currentUser.id,
-                senderName: currentUser.name,
-                senderUsername: currentUser.username,
-                text: messageText,
-                recipientId: currentChatRecipient._id,
-                recipientUsername: currentChatRecipient.username,
-                timestamp: new Date().toISOString(),
-                localId: Date.now()
-            };
-            
-            // Optimistically display the message immediately
-            displayChatMessage(message);
-            
-            // Send via socket to save in database
-            if (window.appSocket && window.appSocket.connected) {
-                window.appSocket.emit('chat-message', message);
-                console.log('✅ Message sent via Socket.IO');
-            } else {
-                console.error('Socket not connected, cannot send message');
-                showAlert('Connection error. Please try again.', 'error');
-                return;
-            }
-        }
+        // Create message object
+        const message = {
+            senderId: currentUser.id,
+            senderName: currentUser.name,
+            senderUsername: currentUser.username,
+            text: messageText,
+            recipientId: currentChatRecipient._id,
+            recipientUsername: currentChatRecipient.username,
+            timestamp: new Date().toISOString(),
+            localId: Date.now()
+        };
         
-        // Clear input after successful send
+        // Optimistically display the message immediately (like WhatsApp)
+        displayChatMessage(message);
+        
+        // Clear input immediately for better UX
         input.value = '';
+        
+        // Send via socket to save in database
+        if (window.appSocket && window.appSocket.connected) {
+            console.log('Sending message via Socket.IO:', message);
+            console.log('Socket ID:', window.appSocket.id);
+            console.log('Socket connected:', window.appSocket.connected);
+            
+            // Ensure we're in the user room
+            window.appSocket.emit('join-user', currentUser.id);
+            
+            // Send the message
+            window.appSocket.emit('chat-message', message);
+            console.log('✅ Message sent via Socket.IO');
+        } else {
+            console.error('Socket not connected, cannot send message');
+            console.error('Socket state:', {
+                exists: !!window.appSocket,
+                connected: window.appSocket?.connected,
+                id: window.appSocket?.id
+            });
+            showAlert('Connection error. Please try again.', 'error');
+            // Re-add the message to input if sending failed
+            input.value = messageText;
+            return;
+        }
         
         // Focus back on input for continuous typing
         input.focus();
@@ -2285,7 +2382,14 @@ async function sendChatMessage() {
     } catch (error) {
         console.error('❌ Failed to send message:', error);
         showAlert('Failed to send message. Please try again.', 'error');
+        // Re-add the message to input if sending failed
+        input.value = messageText;
     }
+}
+
+// Alternative send message function (legacy) - now calls the main function
+function sendMessage() {
+    sendChatMessage();
 }
 
 async function fetchAndDisplayExistingChats() {
@@ -3123,6 +3227,68 @@ function testSocketConnection() {
 // Make test function available globally for debugging
 window.testSocketConnection = testSocketConnection;
 
+// Debug message delivery
+function debugMessageDelivery() {
+    console.log('=== MESSAGE DELIVERY DEBUG ===');
+    console.log('Socket connected:', window.appSocket?.connected);
+    console.log('Socket ID:', window.appSocket?.id);
+    console.log('Current user:', currentUser);
+    console.log('Current chat recipient:', currentChatRecipient);
+    
+    if (window.appSocket && window.appSocket.connected && currentUser) {
+        console.log('Re-joining user room:', currentUser.id);
+        window.appSocket.emit('join-user', currentUser.id);
+        
+        // Test message
+        const testMessage = {
+            senderId: currentUser.id,
+            senderName: currentUser.name,
+            senderUsername: currentUser.username,
+            text: 'Test message - ' + new Date().toLocaleTimeString(),
+            recipientId: currentChatRecipient?._id,
+            recipientUsername: currentChatRecipient?.username,
+            timestamp: new Date().toISOString(),
+            localId: Date.now()
+        };
+        
+        console.log('Sending test message:', testMessage);
+        window.appSocket.emit('chat-message', testMessage);
+    }
+}
+
+window.debugMessageDelivery = debugMessageDelivery;
+
+// Simple test to check message reception
+function testMessageReception() {
+    console.log('=== TESTING MESSAGE RECEPTION ===');
+    
+    // Add a temporary listener to see all incoming messages
+    if (window.appSocket) {
+        window.appSocket.off('test-chat-message'); // Remove any existing listener
+        window.appSocket.on('test-chat-message', (data) => {
+            console.log('🧪 Test message received:', data);
+        });
+        
+        // Send a test message to ourselves
+        if (currentUser) {
+            const testMsg = {
+                senderId: currentUser.id,
+                senderName: currentUser.name,
+                senderUsername: currentUser.username,
+                text: 'Self-test message',
+                recipientId: currentUser.id,
+                recipientUsername: currentUser.username,
+                timestamp: new Date().toISOString()
+            };
+            
+            console.log('Sending self-test message:', testMsg);
+            window.appSocket.emit('chat-message', testMsg);
+        }
+    }
+}
+
+window.testMessageReception = testMessageReception;
+
 // Test function for session notifications
 function testSessionNotification() {
     if (!window.appSocket || !window.appSocket.connected) {
@@ -3439,6 +3605,34 @@ async function testChatHistory() {
     }
 }
 
+// Test function to debug sessions
+async function testSessionsLoading() {
+    console.log('=== Testing Sessions Loading ===');
+    console.log('Current user:', currentUser);
+    console.log('Selected session tab:', selectedSessionTab);
+    
+    try {
+        const sessions = await getSessions();
+        console.log('Sessions loaded:', sessions);
+        
+        const browseContainer = document.getElementById('browse-sessions-list');
+        const myContainer = document.getElementById('my-sessions-list');
+        
+        console.log('Browse container exists:', !!browseContainer);
+        console.log('My sessions container exists:', !!myContainer);
+        
+        if (sessions.length > 0) {
+            console.log('Displaying sessions in browse container...');
+            displaySessions(sessions, browseContainer);
+        }
+        
+        return sessions;
+    } catch (error) {
+        console.error('Test failed:', error);
+        return null;
+    }
+}
+
 // Make test functions available globally
 window.testSessionNotification = testSessionNotification;
 window.testBotMessage = testBotMessage;
@@ -3449,6 +3643,7 @@ window.forceTestLogin = forceTestLogin;
 window.setupLoginForm = setupLoginForm;
 window.testMessageSaving = testMessageSaving;
 window.testChatHistory = testChatHistory;
+window.testSessionsLoading = testSessionsLoading;
 
 // Add Feynman Bot to chat list
 function addFeynmanBotToChat() {

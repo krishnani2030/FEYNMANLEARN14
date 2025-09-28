@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const Message = require('../models/Message');
-const { protect } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -39,7 +39,7 @@ const User = require('../models/User'); // Import User model
 const mongoose = require('mongoose');
 
 // Get chat messages for a session (general chat)
-router.get('/session/:sessionId', protect, async (req, res) => {
+router.get('/session/:sessionId', authMiddleware, async (req, res) => {
     try {
         const { sessionId } = req.params;
         // General chat uses sessionId null, while specific sessions use an ObjectId
@@ -60,7 +60,7 @@ router.get('/session/:sessionId', protect, async (req, res) => {
 });
 
 // Get private chat messages between two users
-router.get('/private/:recipientId', protect, async (req, res) => {
+router.get('/private/:recipientId', authMiddleware, async (req, res) => {
     try {
         const { recipientId } = req.params;
         const userId = req.user.id; // Current authenticated user
@@ -79,7 +79,7 @@ router.get('/private/:recipientId', protect, async (req, res) => {
 });
 
 // Get chat history with a specific user (alias for private chat)
-router.get('/history/:recipientId', protect, async (req, res) => {
+router.get('/history/:recipientId', authMiddleware, async (req, res) => {
     try {
         const { recipientId } = req.params;
         const userId = req.user.id; // Current authenticated user
@@ -116,7 +116,7 @@ router.get('/history/:recipientId', protect, async (req, res) => {
 });
 
 // Get recent chat partners (users with whom current user has chatted)
-router.get('/recent', protect, async (req, res) => {
+router.get('/recent', authMiddleware, async (req, res) => {
     try {
         const userId = req.user.id;
 
@@ -170,7 +170,7 @@ router.get('/recent', protect, async (req, res) => {
 });
 
 // Get bot messages for current user
-router.get('/bot-messages', protect, async (req, res) => {
+router.get('/bot-messages', authMiddleware, async (req, res) => {
     try {
         const messages = await Message.find({
             recipient: req.user.id,
@@ -186,7 +186,7 @@ router.get('/bot-messages', protect, async (req, res) => {
 });
 
 // File upload endpoint
-router.post('/upload', protect, upload.single('file'), async (req, res) => {
+router.post('/upload', authMiddleware, upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
