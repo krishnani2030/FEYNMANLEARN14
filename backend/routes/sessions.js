@@ -128,6 +128,35 @@ router.post('/:id/enroll', authMiddleware, async (req, res) => {
         await session.populate('creator', 'name email');
         await session.populate('participants.user', 'name');
 
+        // Notify session creator about new enrollment
+        if (session.creator._id.toString() !== req.user._id.toString()) {
+            const Message = require('../models/Message');
+            
+            // Create notification message for session creator
+            const notificationMessage = new Message({
+                sender: null, // Bot message
+                senderName: 'Feynman Bot',
+                text: `🎉 Great news! ${req.user.name} has enrolled in your session "${session.topic}" scheduled for ${new Date(session.date).toLocaleDateString()}. You now have ${session.participants.length}/${session.maxParticipants} participants!`,
+                recipient: session.creator._id,
+                timestamp: new Date(),
+                isBot: true
+            });
+            
+            await notificationMessage.save();
+            
+            // Emit real-time notification if socket.io is available
+            if (req.app.get('io')) {
+                req.app.get('io').to(`user-${session.creator._id}`).emit('chat-message', {
+                    senderId: 'bot',
+                    senderName: 'Feynman Bot',
+                    text: notificationMessage.text,
+                    recipientId: session.creator._id.toString(),
+                    timestamp: notificationMessage.timestamp.toISOString(),
+                    isBot: true
+                });
+            }
+        }
+
         res.json({ message: 'Successfully enrolled in session', session });
 
     } catch (error) {

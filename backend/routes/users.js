@@ -8,8 +8,8 @@ const router = express.Router();
 router.get('/suggest-username', authMiddleware, async (req, res) => {
     try {
         const { q } = req.query;
-        if (!q || q.length < 2) { // Require at least 2 characters for suggestion
-            return res.json({ users: [] }); // Return empty array for short queries
+        if (!q || q.length < 1) { // Allow single character searches
+            return res.json({ users: [] }); // Return empty array for empty queries
         }
 
         const searchQuery = new RegExp(`^${q}`, 'i'); // Case-insensitive search, starting with query
@@ -62,15 +62,19 @@ router.get('/search', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Search query is required' });
         }
 
-        const searchQuery = new RegExp(q, 'i'); // Case-insensitive search
+        // Use prefix matching for username and name for better search experience
+        const prefixQuery = new RegExp(`^${q}`, 'i'); // Starts with query
+        const containsQuery = new RegExp(q, 'i'); // Contains query
 
         const users = await User.find({
             _id: { $ne: req.user.id }, // Exclude current user
             $or: [
-                { name: searchQuery },
-                { username: searchQuery },
-                { schoolGrade: searchQuery },
-                { subjectInterests: searchQuery },
+                { name: prefixQuery }, // Prioritize names that start with query
+                { username: prefixQuery }, // Prioritize usernames that start with query
+                { name: containsQuery }, // Also include names that contain query
+                { username: containsQuery }, // Also include usernames that contain query
+                { schoolGrade: containsQuery },
+                { subjectInterests: containsQuery },
             ],
         }).select('_id name username schoolGrade subjectInterests');
 

@@ -423,6 +423,14 @@ document.addEventListener('DOMContentLoaded', async function() {
             
             // Show notification for bot messages
             showAlert('New message from Feynman Bot', 'info');
+        } else if (message.sessionId && message.sessionId !== 'general-chat') {
+            // Handle session discussion messages
+            console.log('Received session discussion message:', message);
+            
+            // If currently viewing this session's discussion, display the message
+            if (currentDiscussionSessionId === message.sessionId) {
+                displayDiscussionMessage(message);
+            }
         } else {
             console.log('Processing regular message for display');
             displayChatMessage(message);
@@ -1246,6 +1254,50 @@ async function handleCreateSession(event) {
     try {
         showAlert('Creating session...', 'info');
         const newSession = await createSession(sessionData);
+        
+        // Show notification popup for session creation
+        const notificationMessage = `
+            <div style="text-align: center;">
+                <h4>🎉 Session Created Successfully!</h4>
+                <p><strong>Topic:</strong> ${sessionData.topic}</p>
+                <p><strong>Level:</strong> ${sessionData.level}</p>
+                <p><strong>Date:</strong> ${formatDate(sessionData.date + 'T' + sessionData.time)}</p>
+                <p><strong>Time:</strong> ${sessionData.time}</p>
+                <p><strong>Max Participants:</strong> ${sessionData.maxParticipants}</p>
+                <p style="margin-top: 16px; color: var(--color-text-secondary);">
+                    Your session is now live and students can enroll!
+                </p>
+            </div>
+        `;
+        
+        showNotificationPopup('Session Created', notificationMessage);
+        
+        // Send Feynman bot message about session creation
+        const botMessage = `🎓 Congratulations! You've successfully created a new session: "${sessionData.topic}"
+
+📚 Session Details:
+• Level: ${sessionData.level}
+• Date: ${formatDate(sessionData.date + 'T' + sessionData.time)}
+• Time: ${sessionData.time}
+• Max Participants: ${sessionData.maxParticipants}
+
+Your session is now live and students can start enrolling. I'll notify you when someone joins! 🔔`;
+        
+        // Create bot message in database
+        const message = {
+            senderId: 'bot',
+            senderName: 'Feynman Bot',
+            senderUsername: 'feynman_bot',
+            text: botMessage,
+            recipientId: currentUser.id,
+            recipientUsername: currentUser.username,
+            timestamp: new Date().toISOString(),
+            isBot: true
+        };
+        
+        // Send via socket to save in database and display
+        window.appSocket?.emit('chat-message', message);
+        
         showAlert('Session created successfully!', 'success');
 
         // Reset form
@@ -1366,8 +1418,32 @@ async function handleEnrollInSession(sessionId) {
         const sessionData = await apiRequest(`/sessions/${sessionId}`);
         const session = sessionData.session;
         
+        // Show notification popup
+        const notificationMessage = `
+            <div style="text-align: center;">
+                <h4>🎉 Successfully Enrolled!</h4>
+                <p><strong>Session:</strong> ${session.topic}</p>
+                <p><strong>Level:</strong> ${session.level === 'high_school' ? 'High School' : 'College'}</p>
+                <p><strong>Date:</strong> ${formatDate(session.date)}</p>
+                <p><strong>Time:</strong> ${formatTime(session.date)}</p>
+                <p><strong>Instructor:</strong> ${session.creator?.name || 'Unknown'}</p>
+                <p style="margin-top: 16px; color: var(--color-text-secondary);">
+                    You'll receive a reminder before the session starts!
+                </p>
+            </div>
+        `;
+        
+        showNotificationPopup('Session Enrollment', notificationMessage);
+        
         // Send Feynman bot message about enrollment
-        const botMessage = `🎓 Great! You've enrolled in "${session.topic}" scheduled for ${formatDate(session.date)} at ${formatTime(session.date)}. I'll notify you when it's time to join!`;
+        const botMessage = `🎓 Great! You've enrolled in "${session.topic}" scheduled for ${formatDate(session.date)} at ${formatTime(session.date)}. 
+
+📚 Session Details:
+• Level: ${session.level === 'high_school' ? 'High School' : 'College'}
+• Instructor: ${session.creator?.name || 'Unknown'}
+• Participants: ${session.participants?.length || 0}/${session.maxParticipants}
+
+I'll notify you when it's time to join! 🔔`;
         
         // Create bot message in database
         const message = {
@@ -1487,7 +1563,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
         if (isCreator) {
             actionButton = `<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`;
         } else if (isEnrolled) {
-            actionButton = '<span class="enrollment-status">Already Enrolled</span>';
+            actionButton = '<button class="btn btn--enrolled btn--sm" disabled>✓ Enrolled</button>';
         } else if (isFull) {
             actionButton = '<span class="enrollment-status">Full</span>';
         } else if (session.status === 'ongoing') {
@@ -1517,6 +1593,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
                 </div>
                 <div class="session-actions">
                     ${actionButton}
+                    <button class="btn btn--secondary btn--sm" onclick="openSessionDiscussion('${session.id || session._id}', '${session.topic.replace(/'/g, "\\'")}')">💬 Discussion</button>
                 </div>
             </div>
         `;
@@ -1970,8 +2047,12 @@ function displayChatMessage(message) {
         if (isBot && currentChatRecipient._id === 'feynman-bot') {
             // Show bot message in bot chat
         } else if (!isBot) {
-            const isForCurrentChat = (message.senderId === currentChatRecipient._id || message.recipientId === currentChatRecipient._id);
-            if (!isForCurrentChat) return;
+            // For regular messages, check if it's between current user and selected recipient
+            const isRelevant = (message.senderId === currentUser?.id && message.recipientId === currentChatRecipient._id) ||
+                             (message.senderId === currentChatRecipient._id && message.recipientId === currentUser?.id) ||
+                             (message.sender === currentUser?.id && message.recipient === currentChatRecipient._id) ||
+                             (message.sender === currentChatRecipient._id && message.recipient === currentUser?.id);
+            if (!isRelevant) return;
         } else {
             return; // Don't show bot messages in regular chats
         }
@@ -1982,13 +2063,13 @@ function displayChatMessage(message) {
     
     if (isBot) {
         messageElement.classList.add('chat-message--bot');
-        messageElement.innerHTML = `${message.text}`;
+        messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
     } else if (isOwn) {
         messageElement.classList.add('chat-message--own');
-        messageElement.textContent = message.text;
+        messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
     } else {
         messageElement.classList.add('chat-message--other');
-        messageElement.innerHTML = `<strong>${message.senderName}:</strong> ${message.text}`;
+        messageElement.innerHTML = `<div class="message-content">${message.text}</div>`;
     }
     
     chatMessagesContainer.appendChild(messageElement);
@@ -2901,6 +2982,156 @@ function testBotMessage() {
     
     console.log('Triggering test bot message');
     window.appSocket.emit('chat-message', testMessage);
+}
+
+// Notification popup functions
+function showNotificationPopup(title, message) {
+    const popup = document.getElementById('notification-popup');
+    const titleElement = document.getElementById('notification-title');
+    const messageElement = document.getElementById('notification-message');
+    
+    if (popup && titleElement && messageElement) {
+        titleElement.textContent = title;
+        messageElement.innerHTML = message;
+        popup.classList.remove('hidden');
+        
+        // Auto-close after 10 seconds
+        setTimeout(() => {
+            closeNotificationPopup();
+        }, 10000);
+    }
+}
+
+function closeNotificationPopup() {
+    const popup = document.getElementById('notification-popup');
+    if (popup) {
+        popup.classList.add('hidden');
+    }
+}
+
+// Session Discussion Functions
+let currentDiscussionSessionId = null;
+
+function openSessionDiscussion(sessionId, sessionTopic) {
+    currentDiscussionSessionId = sessionId;
+    const modal = document.getElementById('session-discussion-modal');
+    const topicElement = document.getElementById('discussion-topic');
+    
+    if (modal && topicElement) {
+        topicElement.textContent = `Discussion: ${sessionTopic}`;
+        modal.classList.remove('hidden');
+        
+        // Load discussion messages
+        loadDiscussionMessages(sessionId);
+        
+        // Setup event listeners
+        setupDiscussionEventListeners();
+    }
+}
+
+function closeSessionDiscussion() {
+    const modal = document.getElementById('session-discussion-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        currentDiscussionSessionId = null;
+    }
+}
+
+function setupDiscussionEventListeners() {
+    const sendButton = document.getElementById('send-discussion-message');
+    const messageInput = document.getElementById('discussion-message-input');
+    
+    if (sendButton && !sendButton.dataset.listenersAttached) {
+        sendButton.addEventListener('click', sendDiscussionMessage);
+        sendButton.dataset.listenersAttached = 'true';
+    }
+    
+    if (messageInput && !messageInput.dataset.listenersAttached) {
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendDiscussionMessage();
+            }
+        });
+        messageInput.dataset.listenersAttached = 'true';
+    }
+}
+
+async function loadDiscussionMessages(sessionId) {
+    const messagesContainer = document.getElementById('discussion-messages');
+    if (!messagesContainer) return;
+    
+    messagesContainer.innerHTML = '<div class="loading-message">Loading discussion...</div>';
+    
+    try {
+        // Use the session chat endpoint to get discussion messages
+        const data = await apiRequest(`/chat/session/${sessionId}`);
+        const messages = data.messages || [];
+        
+        if (messages.length === 0) {
+            messagesContainer.innerHTML = '<div class="empty-discussion">No discussion yet. Be the first to start the conversation!</div>';
+            return;
+        }
+        
+        messagesContainer.innerHTML = '';
+        messages.forEach(message => {
+            displayDiscussionMessage(message);
+        });
+        
+        // Scroll to bottom
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        
+    } catch (error) {
+        console.error('Failed to load discussion messages:', error);
+        messagesContainer.innerHTML = '<div class="error-message">Failed to load discussion. Please try again.</div>';
+    }
+}
+
+function displayDiscussionMessage(message) {
+    const messagesContainer = document.getElementById('discussion-messages');
+    if (!messagesContainer) return;
+    
+    const messageElement = document.createElement('div');
+    messageElement.className = 'discussion-message';
+    
+    const timeString = new Date(message.timestamp).toLocaleString();
+    
+    messageElement.innerHTML = `
+        <div class="discussion-message-header">
+            <span class="discussion-message-author">${message.senderName}</span>
+            <span class="discussion-message-time">${timeString}</span>
+        </div>
+        <div class="discussion-message-content">${message.text}</div>
+    `;
+    
+    messagesContainer.appendChild(messageElement);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function sendDiscussionMessage() {
+    const messageInput = document.getElementById('discussion-message-input');
+    const messageText = messageInput.value.trim();
+    
+    if (!messageText || !currentDiscussionSessionId || !currentUser) {
+        console.log('Cannot send discussion message - missing text, session, or user');
+        return;
+    }
+    
+    const message = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderUsername: currentUser.username,
+        text: messageText,
+        sessionId: currentDiscussionSessionId,
+        timestamp: new Date().toISOString()
+    };
+    
+    console.log('Sending discussion message:', message);
+    
+    // Send via socket to save in database
+    window.appSocket?.emit('chat-message', message);
+    
+    // Clear input
+    messageInput.value = '';
 }
 
 // Function to check connected users

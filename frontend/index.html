@@ -446,6 +446,29 @@
             </div>
         </div>
 
+        <!-- Session Discussion Modal -->
+        <div id="session-discussion-modal" class="modal hidden">
+            <div class="modal-overlay" onclick="closeSessionDiscussion()"></div>
+            <div class="modal-content discussion-modal">
+                <div class="modal-header">
+                    <h3 id="discussion-topic">Session Discussion</h3>
+                    <button class="modal-close" onclick="closeSessionDiscussion()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="discussion-info">
+                        <p>Discuss session content, duration, expectations, and ask questions about this session.</p>
+                    </div>
+                    <div id="discussion-messages" class="discussion-messages">
+                        <!-- Discussion messages will be populated here -->
+                    </div>
+                    <div class="discussion-input-container">
+                        <input type="text" id="discussion-message-input" placeholder="Type your message..." class="form-control">
+                        <button id="send-discussion-message" class="btn btn--primary">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Video Conference Page (WebRTC) -->
         <div id="video-conference-page" class="page hidden">
             <div class="video-conference-container">
@@ -475,6 +498,22 @@
         <!-- Alert Messages -->
         <div id="alert" class="alert hidden">
             <span id="alert-message"></span>
+        </div>
+
+        <!-- Notification Popup -->
+        <div id="notification-popup" class="notification-popup hidden">
+            <div class="notification-content">
+                <div class="notification-header">
+                    <h3 id="notification-title">Notification</h3>
+                    <button class="notification-close" onclick="closeNotificationPopup()">&times;</button>
+                </div>
+                <div class="notification-body">
+                    <div id="notification-message"></div>
+                </div>
+                <div class="notification-actions">
+                    <button class="btn btn--primary btn--sm" onclick="closeNotificationPopup()">OK</button>
+                </div>
+            </div>
         </div>
     </div>
 
