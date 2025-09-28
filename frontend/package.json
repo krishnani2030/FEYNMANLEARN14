@@ -15,5 +15,8 @@
     "frontend"
   ],
   "author": "Your Name",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "ably": "^2.13.0"
+  }
 }

@@ -532,8 +532,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     if (chatMessageInput) {
         chatMessageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault(); // Prevent form submission
                 sendChatMessage();
+            }
+        });
+        
+        // Also handle keydown for better responsiveness
+        chatMessageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
             }
         });
     }
@@ -555,6 +563,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Show appropriate page
     if (currentUser) {
         showDashboard();
+        // Initialize new systems after login
+        await initializeNewSystems();
     } else {
         showLandingPage();
     }
@@ -642,10 +652,73 @@ function setupOtherFormListeners() {
 // Rest of the original JavaScript code follows...
 // (The navigation, UI, and form handling functions remain the same)
 
-// Global variables
+// Additional global variables for new features
+let selectedSessionTab = 'my-sessions';
+let selectedChatRecipient = null;
 let currentView = 'landing';
-let selectedSessionTab = 'browse';
-let selectedChatRecipient = null; // Stores the currently selected user for private chat
+
+// New system instances
+let ablyChat = null;
+let mediasoupClient = null;
+let isAblyInitialized = false;
+
+// Initialize new systems (Ably + Mediasoup)
+async function initializeNewSystems() {
+    if (!currentUser || isAblyInitialized) return;
+    
+    try {
+        // Initialize Ably Chat
+        if (window.ablyChat) {
+            ablyChat = window.ablyChat;
+            const success = await ablyChat.init(currentUser);
+            if (success) {
+                console.log('✅ Ably chat system initialized');
+                
+                // Subscribe to notifications
+                await ablyChat.subscribeToNotifications((notification) => {
+                    handleAblyNotification(notification);
+                });
+                
+                isAblyInitialized = true;
+            }
+        }
+        
+        // Initialize Mediasoup Client
+        if (window.mediasoupClient) {
+            mediasoupClient = window.mediasoupClient;
+            await mediasoupClient.init();
+            console.log('✅ Mediasoup client initialized');
+        }
+        
+    } catch (error) {
+        console.error('❌ Failed to initialize new systems:', error);
+    }
+}
+
+// Handle Ably notifications
+function handleAblyNotification(notification) {
+    console.log('📬 Received notification:', notification);
+    
+    // Show notification popup if it's important
+    if (notification.type === 'session_reminder' || notification.type === 'session_created') {
+        showNotificationPopup('Feynman Bot', notification.message || notification.text);
+    }
+    
+    // Update UI based on notification type
+    switch (notification.type) {
+        case 'enrollment_update':
+            // Refresh sessions list to show updated enrollment
+            if (selectedSessionTab) {
+                updateSessionsList();
+            }
+            break;
+        case 'session_status_update':
+            // Refresh sessions to show status changes
+            updateSessionsList();
+            break;
+    }
+}
+
 // WebRTC state
 let peerConnection = null;
 let localStream = null;
@@ -1610,17 +1683,14 @@ function displaySessions(sessionsList, container, isOwner = false) {
                            session.level === 'college' ? 'College' : session.level;
         
         return `
-            <div class="session-card ${isCreator ? 'session-card--own' : ''}">
+            <div class="session-card" data-session-id="${session.id || session._id}">
                 <div class="session-header">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                        <h3 style="margin: 0;">${session.topic}</h3>
-                        ${isCreator ? '<span class="session-owner-badge">Created by you</span>' : ''}
-                    </div>
-                    <span class="session-level">${displayLevel}</span>
+                    <h3>${session.topic}</h3>
+                    <span class="session-level">${session.level}</span>
                 </div>
                 <div class="session-details">
-                    <p><strong>Instructor:</strong> ${session.creatorName || session.creator?.name || 'Unknown'}</p>
-                    <p><strong>Date:</strong> ${formatDate(session.date)}</p>
+                    <p><strong>Creator:</strong> ${session.creator?.name || session.creatorName || 'Unknown'}</p>
+                    <p><strong>Date:</strong> ${new Date(session.date).toLocaleDateString()}</p>
                     <p><strong>Time:</strong> ${session.time || formatTime(session.date)}</p>
                     <p><strong>Participants:</strong> ${session.participants?.length || 0}/${session.maxParticipants}</p>
                 </div>
@@ -2109,7 +2179,7 @@ function displayChatMessage(message) {
     chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
 }
 
-function sendChatMessage() {
+async function sendChatMessage() {
     const input = document.getElementById('chat-message-input');
     const messageText = input.value.trim();
     
@@ -2121,32 +2191,55 @@ function sendChatMessage() {
     
     console.log('Sending chat message to:', currentChatRecipient.name);
     
-    const message = {
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        senderUsername: currentUser.username,
-        text: messageText,
-        recipientId: currentChatRecipient._id,
-        recipientUsername: currentChatRecipient.username,
-        timestamp: new Date().toISOString(),
-        localId: Date.now() // For optimistic UI updates
-    };
-    
-    console.log('Message payload:', message);
-    
-    // Optimistically display the message immediately
-    displayChatMessage(message);
-    
-    // Send via socket to save in database
-    if (window.appSocket && window.appSocket.connected) {
-        window.appSocket.emit('chat-message', message);
-    } else {
-        console.error('Socket not connected, cannot send message');
-        showAlert('Connection error. Please try again.', 'error');
+    try {
+        // Use Ably if available, fallback to Socket.IO
+        if (ablyChat && isAblyInitialized) {
+            const message = await ablyChat.sendPrivateMessage(
+                currentChatRecipient._id,
+                messageText
+            );
+            
+            // Optimistically display the message immediately
+            displayChatMessage(message);
+            
+            console.log('✅ Message sent via Ably');
+        } else {
+            // Fallback to Socket.IO
+            const message = {
+                senderId: currentUser.id,
+                senderName: currentUser.name,
+                senderUsername: currentUser.username,
+                text: messageText,
+                recipientId: currentChatRecipient._id,
+                recipientUsername: currentChatRecipient.username,
+                timestamp: new Date().toISOString(),
+                localId: Date.now()
+            };
+            
+            // Optimistically display the message immediately
+            displayChatMessage(message);
+            
+            // Send via socket to save in database
+            if (window.appSocket && window.appSocket.connected) {
+                window.appSocket.emit('chat-message', message);
+                console.log('✅ Message sent via Socket.IO');
+            } else {
+                console.error('Socket not connected, cannot send message');
+                showAlert('Connection error. Please try again.', 'error');
+                return;
+            }
+        }
+        
+        // Clear input after successful send
+        input.value = '';
+        
+        // Focus back on input for continuous typing
+        input.focus();
+        
+    } catch (error) {
+        console.error('❌ Failed to send message:', error);
+        showAlert('Failed to send message. Please try again.', 'error');
     }
-    
-    // Clear input
-    input.value = '';
 }
 
 async function fetchAndDisplayExistingChats() {
@@ -3343,6 +3436,77 @@ function updateBotChatPreview(text) {
         if (preview) {
             const previewText = text.length > 40 ? text.substring(0, 40) + '...' : text;
             preview.textContent = previewText;
+        }
+    }
+}
+
+// Update enrollment button for a specific session
+function updateEnrollmentButton(sessionId, isEnrolled) {
+    const sessionCard = document.querySelector(`[data-session-id="${sessionId}"]`);
+    if (!sessionCard) return;
+    
+    const enrollButton = sessionCard.querySelector('.enroll-btn, .enrolled-btn');
+    if (!enrollButton) return;
+    
+    if (isEnrolled) {
+        enrollButton.textContent = '✓ Enrolled';
+        enrollButton.className = 'btn btn--success btn--sm enrolled-btn';
+        enrollButton.disabled = true;
+        enrollButton.onclick = null;
+    } else {
+        enrollButton.textContent = 'Enroll';
+        enrollButton.className = 'btn btn--primary btn--sm enroll-btn';
+        enrollButton.disabled = false;
+        enrollButton.onclick = () => handleEnrollInSession(sessionId);
+    }
+}
+
+// Check if user can join call (15 minutes before session)
+function canJoinCall(sessionDate, sessionTime) {
+    const sessionDateTime = new Date(`${sessionDate}T${sessionTime}`);
+    const now = new Date();
+    const timeDiff = sessionDateTime.getTime() - now.getTime();
+    const minutesDiff = Math.floor(timeDiff / (1000 * 60));
+    
+    // Allow joining 15 minutes before session
+    return minutesDiff <= 15;
+}
+
+// Get time until call is available
+function getTimeUntilCallAvailable(sessionDate, sessionTime) {
+    const sessionDateTime = new Date(`${sessionDate}T${sessionTime}`);
+    const callAvailableTime = new Date(sessionDateTime.getTime() - (15 * 60 * 1000)); // 15 minutes before
+    const now = new Date();
+    const timeDiff = callAvailableTime.getTime() - now.getTime();
+    
+    if (timeDiff <= 0) return null;
+    
+    const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return { hours, minutes };
+}
+
+// Update call button availability
+function updateCallButtonAvailability(sessionId, sessionDate, sessionTime) {
+    const sessionCard = document.querySelector(`[data-session-id="${sessionId}"]`);
+    if (!sessionCard) return;
+    
+    const callButton = sessionCard.querySelector('.call-btn, .join-btn');
+    if (!callButton) return;
+    
+    if (canJoinCall(sessionDate, sessionTime)) {
+        callButton.disabled = false;
+        callButton.textContent = 'Join Call';
+        callButton.title = 'Click to join the session call';
+        callButton.className = 'btn btn--primary btn--sm call-btn';
+    } else {
+        const timeUntil = getTimeUntilCallAvailable(sessionDate, sessionTime);
+        if (timeUntil) {
+            callButton.disabled = true;
+            callButton.textContent = 'Call Unavailable';
+            callButton.title = `Available in ${timeUntil.hours}h ${timeUntil.minutes}m (15 minutes before session)`;
+            callButton.className = 'btn btn--secondary btn--sm call-btn disabled';
         }
     }
 }

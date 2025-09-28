@@ -21,8 +21,12 @@ const sessionRoutes = require('./routes/sessions');
 const userRoutes = require('./routes/users');
 const chatRoutes = require('./routes/chat');
 const notesRoutes = require('./routes/notes');
+const mediasoupRoutes = require('./routes/mediasoup');
+const ablyRoutes = require('./routes/ably');
 const { notifySessionStart, setSocketIo } = require('./services/notificationService');
 const { checkOngoingSessions } = require('./services/sessionService');
+const mediasoupService = require('./services/mediasoupService');
+const ablyService = require('./services/ablyService');
 
 const app = express();
 const server = require('http').createServer(app);
@@ -131,6 +135,24 @@ mongoose.connect(rawMongoUri, {
         console.error('Error checking/seeding database:', error);
     }
 
+    // Initialize Mediasoup
+    try {
+        await mediasoupService.init();
+        console.log('✅ Mediasoup initialized successfully');
+    } catch (error) {
+        console.error('❌ Failed to initialize Mediasoup:', error);
+        process.exit(1);
+    }
+
+    // Initialize Ably
+    try {
+        ablyService.init();
+        console.log('✅ Ably service initialized');
+    } catch (error) {
+        console.error('❌ Failed to initialize Ably:', error);
+        // Don't exit - Ably is optional for basic functionality
+    }
+
     // Start the server only after a successful DB connection
     server.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
@@ -148,6 +170,8 @@ app.use('/api/sessions', sessionRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/notes', notesRoutes);
+app.use('/api/mediasoup', mediasoupRoutes);
+app.use('/api/ably', ablyRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

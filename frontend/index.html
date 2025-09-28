@@ -204,6 +204,9 @@
                             <h2>Feynman Learn</h2>
                         </div>
                         <div class="user-menu">
+                            <div class="connection-status">
+                                <span id="connection-status" class="status-disconnected">Connecting...</span>
+                            </div>
                             <span id="user-name">Welcome</span>
                             <button class="btn btn--secondary btn--sm" onclick="handleLogout()">Logout</button>
                         </div>
@@ -517,9 +520,16 @@
         </div>
     </div>
 
+    <!-- External Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
+    
+    <!-- Feynman Learn Modules -->
+    <script src="js/encryption.js"></script>
+    <script src="js/ablyChat.js"></script>
+    <script src="js/mediasoupClient.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Session = require('../models/Session');
+const ablyService = require('./ablyService');
 let ioInstance = null;
 
 function setSocketIo(io) { ioInstance = io; }
@@ -24,6 +25,83 @@ async function sendEmail(to, subject, text) {
         console.error('Error sending email', e);
     }
 }
+
+// Feynman Bot notification functions
+const sendFeynmanBotNotification = async (userId, message, type = 'info') => {
+    try {
+        // Send via Ably if available
+        if (ablyService.client) {
+            await ablyService.sendFeynmanBotMessage(userId, message);
+        }
+        
+        // Fallback to Socket.IO
+        if (ioInstance) {
+            ioInstance.to(`user_${userId}`).emit('feynman-bot-message', {
+                message,
+                type,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        console.log(`🤖 Sent Feynman Bot message to user ${userId}: ${message}`);
+    } catch (error) {
+        console.error('Error sending Feynman Bot notification:', error);
+    }
+};
+
+const notifySessionCreated = async (sessionId, creatorId) => {
+    try {
+        const session = await Session.findById(sessionId).populate('creator', 'name');
+        if (!session) return;
+        
+        const message = `🎉 Your session "${session.topic}" has been created! Participants can now enroll. Session starts on ${new Date(session.date).toLocaleDateString()} at ${session.time || 'TBD'}.`;
+        
+        await sendFeynmanBotNotification(creatorId, message, 'session_created');
+    } catch (error) {
+        console.error('Error sending session created notification:', error);
+    }
+};
+
+const notifySessionEnrollment = async (sessionId, enrolledUserId, sessionCreatorId) => {
+    try {
+        const session = await Session.findById(sessionId);
+        const enrolledUser = await User.findById(enrolledUserId);
+        
+        if (!session || !enrolledUser) return;
+        
+        // Notify session creator
+        const creatorMessage = `👤 ${enrolledUser.name} just enrolled in your session "${session.topic}"! You now have ${session.participants.length} participant(s).`;
+        await sendFeynmanBotNotification(sessionCreatorId, creatorMessage, 'enrollment_received');
+        
+        // Notify enrolled user
+        const userMessage = `✅ You successfully enrolled in "${session.topic}" hosted by ${session.creator.name}. Session starts on ${new Date(session.date).toLocaleDateString()} at ${session.time || 'TBD'}.`;
+        await sendFeynmanBotNotification(enrolledUserId, userMessage, 'enrollment_confirmed');
+        
+    } catch (error) {
+        console.error('Error sending enrollment notifications:', error);
+    }
+};
+
+const notifySessionReminder = async (sessionId) => {
+    try {
+        const session = await Session.findById(sessionId).populate('creator participants.user', 'name');
+        if (!session) return;
+        
+        const reminderMessage = `⏰ Your session "${session.topic}" starts in 15 minutes! Get ready to share your knowledge.`;
+        
+        // Notify creator
+        await sendFeynmanBotNotification(session.creator._id, reminderMessage, 'session_reminder');
+        
+        // Notify all participants
+        for (const participant of session.participants) {
+            const userId = participant.user ? participant.user._id : participant;
+            await sendFeynmanBotNotification(userId, reminderMessage, 'session_reminder');
+        }
+        
+    } catch (error) {
+        console.error('Error sending session reminder:', error);
+    }
+};
 
 // Send session start notification (at start time)
 const notifySessionStart = async (sessionId) => {
@@ -188,5 +266,9 @@ module.exports = {
     notifySessionStart,
     notifySessionReminder,
     notifyMeetingLink,
+    sendFeynmanBotNotification,
+    notifySessionCreated,
+    notifySessionEnrollment,
+    notifySessionReminder,
     setSocketIo,
 };
