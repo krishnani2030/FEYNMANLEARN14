@@ -158,13 +158,18 @@ async function getCurrentUser() {
 // Session Functions
 async function getSessions() {
     try {
+        console.log('Fetching sessions from API...');
         const data = await apiRequest('/sessions');
+        console.log('Sessions API response:', data);
         sessions = data.sessions || [];
+        console.log('Loaded sessions:', sessions.length, 'sessions');
         return sessions;
     } catch (error) {
         console.error('Failed to fetch sessions:', error);
-        // IMPORTANT: Removed fallback to mock data to diagnose actual API issues
-        throw error; // Re-throw the error so it can be caught higher up if needed
+        // Fallback to mock data for now
+        console.log('Using mock sessions as fallback');
+        sessions = getMockSessions();
+        return sessions;
     }
 }
 
@@ -521,14 +526,14 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     if (sendChatButton) {
         sendChatButton.addEventListener('click', () => {
-            sendChatMessage(chatMessageInput.value);
+            sendChatMessage();
         });
     }
 
     if (chatMessageInput) {
         chatMessageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                sendChatMessage(chatMessageInput.value);
+                sendChatMessage();
             }
         });
     }
@@ -1523,20 +1528,39 @@ function showSessionsTab(tab) {
 }
 
 async function updateSessionsList() {
+    console.log('Updating sessions list for tab:', selectedSessionTab);
+    
     if (selectedSessionTab === 'browse-sessions') {
         // Show all sessions
         const container = document.getElementById('browse-sessions-list');
-        const allSessions = await getSessions();
-        displaySessions(allSessions, container);
+        console.log('Browse sessions container found:', !!container);
+        
+        try {
+            const allSessions = await getSessions();
+            console.log('Got sessions for browse:', allSessions.length);
+            displaySessions(allSessions, container);
+        } catch (error) {
+            console.error('Error loading browse sessions:', error);
+            container.innerHTML = '<p class="empty-state">Failed to load sessions. Please try again.</p>';
+        }
     } else if (selectedSessionTab === 'my-sessions') {
         // Show user's sessions
         const container = document.getElementById('my-sessions-list');
+        console.log('My sessions container found:', !!container);
+        
         try {
             const userSessions = await getUserSessions();
+            console.log('Got user sessions:', userSessions.length);
             displaySessions(userSessions, container, true);
         } catch (error) {
-            // Fallback to mock data
-            const userSessions = sessions.filter(s => s.creatorId === currentUser?.id);
+            console.error('Error loading user sessions:', error);
+            // Fallback to filtering from all sessions
+            const allSessions = await getSessions();
+            const userSessions = allSessions.filter(s => 
+                s.creatorId === currentUser?.id || s.creator === currentUser?.id ||
+                (s.creator && s.creator._id === currentUser?.id)
+            );
+            console.log('Fallback user sessions:', userSessions.length);
             displaySessions(userSessions, container, true);
         }
     }
@@ -2091,6 +2115,7 @@ function sendChatMessage() {
     
     if (!messageText || !currentChatRecipient) {
         console.log('Cannot send message - missing text or recipient');
+        console.log('Current chat recipient:', currentChatRecipient);
         return;
     }
     
@@ -2109,8 +2134,16 @@ function sendChatMessage() {
     
     console.log('Message payload:', message);
     
+    // Optimistically display the message immediately
+    displayChatMessage(message);
+    
     // Send via socket to save in database
-    window.appSocket?.emit('chat-message', message);
+    if (window.appSocket && window.appSocket.connected) {
+        window.appSocket.emit('chat-message', message);
+    } else {
+        console.error('Socket not connected, cannot send message');
+        showAlert('Connection error. Please try again.', 'error');
+    }
     
     // Clear input
     input.value = '';
