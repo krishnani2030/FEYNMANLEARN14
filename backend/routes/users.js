@@ -62,19 +62,14 @@ router.get('/search', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Search query is required' });
         }
 
-        // Use prefix matching for username and name for better search experience
+        // Use only prefix matching for better search experience
         const prefixQuery = new RegExp(`^${q}`, 'i'); // Starts with query
-        const containsQuery = new RegExp(q, 'i'); // Contains query
 
         const users = await User.find({
             _id: { $ne: req.user.id }, // Exclude current user
             $or: [
-                { name: prefixQuery }, // Prioritize names that start with query
-                { username: prefixQuery }, // Prioritize usernames that start with query
-                { name: containsQuery }, // Also include names that contain query
-                { username: containsQuery }, // Also include usernames that contain query
-                { schoolGrade: containsQuery },
-                { subjectInterests: containsQuery },
+                { name: prefixQuery }, // Names that start with query
+                { username: prefixQuery }, // Usernames that start with query
             ],
         }).select('_id name username schoolGrade subjectInterests');
 

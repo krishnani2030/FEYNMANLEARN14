@@ -1296,7 +1296,15 @@ Your session is now live and students can start enrolling. I'll notify you when 
         };
         
         // Send via socket to save in database and display
-        window.appSocket?.emit('chat-message', message);
+        if (window.appSocket && window.appSocket.connected) {
+            console.log('Sending session creation bot message via socket:', message);
+            window.appSocket.emit('chat-message', message);
+            
+            // Add Feynman Bot to chat list if not already there
+            addFeynmanBotToChat();
+        } else {
+            console.error('Socket not connected, cannot send session creation bot message');
+        }
         
         showAlert('Session created successfully!', 'success');
 
@@ -1458,7 +1466,15 @@ I'll notify you when it's time to join! 🔔`;
         };
         
         // Send via socket to save in database and display
-        window.appSocket?.emit('chat-message', message);
+        if (window.appSocket && window.appSocket.connected) {
+            console.log('Sending enrollment bot message via socket:', message);
+            window.appSocket.emit('chat-message', message);
+            
+            // Add Feynman Bot to chat list if not already there
+            addFeynmanBotToChat();
+        } else {
+            console.error('Socket not connected, cannot send enrollment bot message');
+        }
         
         // Refresh sessions from backend to get complete updated data
         await getSessions();
@@ -1533,20 +1549,13 @@ function displaySessions(sessionsList, container, isOwner = false) {
     }
 
     container.innerHTML = sessionsList.map(session => {
-        const isEnrolled = session.participants && session.participants.some(p => {
-            if (typeof p === 'string') {
-                return p === currentUser?.id || p === currentUser?._id;
-            } else if (p.user) {
-                return p.user === currentUser?.id || p.user === currentUser?._id || 
-                       p.user.toString() === currentUser?.id || p.user.toString() === currentUser?._id;
-            }
-            return false;
-        });
-        
-        const isCreator = session.creatorId === currentUser?.id || 
-                         session.creator?.id === currentUser?.id || 
-                         session.creator?._id === currentUser?.id ||
-                         (session.creator && session.creator.toString() === currentUser?.id);
+        // Check enrollment status more reliably
+        const isEnrolled = session.isEnrolled || (session.participants && session.participants.some(p => {
+            const participantId = typeof p === 'string' ? p : 
+                                 p.user ? (typeof p.user === 'string' ? p.user : p.user._id) : 
+                                 p._id;
+            return participantId === currentUser?.id || participantId === currentUser?._id;
+        }));
 
         // Debug logging for enrollment
         console.log('Session enrollment check:', {
