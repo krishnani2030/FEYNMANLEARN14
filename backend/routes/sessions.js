@@ -40,6 +40,21 @@ router.get('/', optionalAuth, async (req, res) => {
     }
 });
 
+// Get user's sessions (must be before /:id route)
+router.get('/mine', authMiddleware, async (req, res) => {
+    try {
+        const sessions = await Session.find({ creator: req.user._id })
+            .populate('creator', 'name email')
+            .populate('participants.user', 'name email')
+            .sort({ createdAt: -1 });
+
+        res.json({ sessions });
+    } catch (error) {
+        console.error('Get user sessions error:', error);
+        res.status(500).json({ error: 'Failed to fetch your sessions' });
+    }
+});
+
 // Get single session by ID
 router.get('/:id', optionalAuth, async (req, res) => {
     try {
@@ -230,20 +245,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('Delete session error:', error);
         res.status(500).json({ error: 'Failed to delete session' });
-    }
-});
-
-// Get user's sessions
-router.get('/mine', authMiddleware, async (req, res) => {
-    try {
-        const sessions = await Session.find({ creator: req.user._id })
-            .populate('creator', 'name email')
-            .populate('participants.user', 'name email')
-            .sort({ createdAt: -1 });
-
-        res.json({ sessions });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch your sessions' });
     }
 });
 
