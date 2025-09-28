@@ -81,8 +81,26 @@ router.get('/search', authMiddleware, async (req, res) => {
     }
 });
 
+// Get user details for chat (authenticated)
+router.get('/:id([0-9a-fA-F]{24})', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id)
+            .select('_id name username email schoolGrade subjectInterests createdAt');
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json({ user });
+
+    } catch (error) {
+        console.error('Get user details error:', error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+});
+
 // Get user profile (public - limited info)
-router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
+router.get('/:id([0-9a-fA-F]{24})/profile', async (req, res) => {
     try {
         const user = await User.findById(req.params.id)
             .select('name username createdAt')

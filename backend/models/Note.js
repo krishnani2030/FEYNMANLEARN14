@@ -15,6 +15,13 @@ const noteSchema = new mongoose.Schema({
         type: String,
         required: true,
     },
+    // Optional PDF attachment metadata
+    pdf: {
+        originalName: { type: String },
+        mimeType: { type: String },
+        size: { type: Number },
+        path: { type: String }, // relative path under uploads folder
+    },
     createdAt: {
         type: Date,
         default: Date.now,

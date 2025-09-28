@@ -1,5 +1,5 @@
 const Session = require('../models/Session');
-const { notifySessionStart, notifySessionReminder } = require('./notificationService');
+const { notifySessionStart, notifySessionReminder, notifyMeetingLink } = require('./notificationService');
 
 // Check and update session statuses
 const checkOngoingSessions = async () => {
@@ -17,6 +17,19 @@ const checkOngoingSessions = async () => {
         // Send reminders
         for (const session of sessionsForReminder) {
             await notifySessionReminder(session._id);
+        }
+
+        // Find sessions that should open meeting link (5 minutes before)
+        const meetingLinkTime = new Date(now.getTime() + 5 * 60 * 1000);
+        const sessionsForMeetingLink = await Session.find({
+            status: 'upcoming',
+            date: { $lte: meetingLinkTime, $gt: now },
+            meetingLinkSent: { $ne: true }
+        });
+
+        // Send meeting link notifications
+        for (const session of sessionsForMeetingLink) {
+            await notifyMeetingLink(session._id);
         }
 
         // Find sessions that should be starting now

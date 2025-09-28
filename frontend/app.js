@@ -65,12 +65,28 @@ async function login(identifier, password) {
             method: 'POST',
             body: JSON.stringify({ identifier, password })
         });
-
-        currentUser = data.user;
-        localStorage.setItem('user', JSON.stringify(currentUser));
-        // Join user-specific room immediately after login
-        if (window.appSocket && currentUser?.id) {
-            window.appSocket.emit('join-user', currentUser.id);
+        if (data.user) {
+            currentUser = data.user;
+            localStorage.setItem('currentUser', JSON.stringify(currentUser));
+            
+            // Join user room for notifications
+            if (window.appSocket) {
+                if (window.appSocket.connected) {
+                    console.log('Joining user room after login:', currentUser.id);
+                    window.appSocket.emit('join-user', currentUser.id);
+                    
+                    // Verify connection after a delay
+                    setTimeout(() => {
+                        checkConnectedUsers();
+                    }, 1000);
+                } else {
+                    console.log('Socket not connected yet, will join room on connect');
+                    // Will join when socket connects (handled in connect event)
+                }
+            }
+            
+            showDashboard();
+            showAlert('Login successful!', 'success');
         }
         return data;
     } catch (error) {
@@ -338,6 +354,14 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Set up form event listeners
     setupFormEventListeners();
+    
+    // Add event delegation as backup for login form
+    document.addEventListener('submit', function(event) {
+        if (event.target.id === 'login-form') {
+            console.log('Login form submitted via event delegation');
+            handleLogin(event);
+        }
+    });
 
     // Initialize Socket.IO (same-origin)
     const socket = io(window.location.origin, {
@@ -347,11 +371,15 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     socket.on('connect', () => {
         console.log('Connected to Socket.IO');
-        // Join a default room or a user-specific room if needed
-        // For now, let's assume a general chat room
-        socket.emit('join-session', 'general-chat'); 
-        if (currentUser?.id) {
+        console.log('Socket ID:', socket.id);
+        if (currentUser) {
+            console.log('Joining user room:', currentUser.id);
             socket.emit('join-user', currentUser.id);
+            
+            // Verify we joined the room after a short delay
+            setTimeout(() => {
+                checkConnectedUsers();
+            }, 1000);
         }
     });
 
@@ -359,9 +387,124 @@ document.addEventListener('DOMContentLoaded', async function() {
         console.log('Disconnected from Socket.IO');
     });
 
+    // Test response handler
+    socket.on('test-response', (data) => {
+        console.log('Received test response:', data);
+    });
+
+    // Connected users response handler
+    socket.on('connected-users-response', (users) => {
+        console.log('Connected users:', users);
+    });
+
     socket.on('chat-message', (message) => {
         console.log('Received chat message:', message);
-        displayChatMessage(message);
+        
+        // Validate message
+        if (!message || !message.text || !message.senderName) {
+            console.error('Invalid message received:', message);
+            return;
+        }
+        
+        // Handle bot messages specially
+        if (message.isBot || message.senderId === 'bot' || message.senderName === 'Feynman Bot') {
+            console.log('Received bot message:', message);
+            
+            // Add Feynman Bot to chat list if not already there
+            addFeynmanBotToChat();
+            
+            // If currently viewing bot chat, display the message
+            if (currentChatRecipient && currentChatRecipient._id === 'feynman-bot') {
+                displayChatMessage(message);
+            }
+            
+            // Update bot chat preview
+            updateBotChatPreview(message.text);
+            
+            // Show notification for bot messages
+            showAlert('New message from Feynman Bot', 'info');
+        } else {
+            console.log('Processing regular message for display');
+            displayChatMessage(message);
+            
+            // Update chat list if this is for current chat
+            if (currentChatRecipient && (message.senderId === currentChatRecipient._id || message.recipientId === currentChatRecipient._id)) {
+                const chatListItem = document.querySelector(`[data-user-id="${currentChatRecipient._id}"]`);
+                if (chatListItem) {
+                    const preview = chatListItem.querySelector('.chat-list-item-preview');
+                    if (preview) {
+                        const previewText = message.text.length > 40 ? message.text.substring(0, 40) + '...' : message.text;
+                        preview.textContent = previewText;
+                    }
+                }
+            }
+        }
+    });
+
+    // WebRTC signaling listeners
+    socket.on('joined-call', (roomId) => {
+        console.log('Joined call room', roomId);
+    });
+    socket.on('offer', async (offer) => {
+        console.log('Received offer');
+        await ensurePeerConnection();
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        window.appSocket.emit('answer', answer, currentRoomId);
+    });
+    socket.on('answer', async (answer) => {
+        console.log('Received answer');
+        if (peerConnection) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+    });
+    socket.on('ice-candidate', async (candidate) => {
+        try {
+            if (peerConnection) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        } catch (e) {
+            console.error('Error adding remote ICE candidate', e);
+        }
+    });
+
+    // Incoming private call notification
+    socket.on('incoming-call', (payload) => {
+        console.log('Incoming call received:', payload);
+        showIncomingCallPrompt(payload);
+    });
+
+    // Caller gets notified if callee accepted/declined
+    socket.on('call-accepted', ({ roomId }) => {
+        console.log('Call accepted for room', roomId);
+        // Nothing extra needed; caller already navigated to call view
+    });
+    socket.on('call-declined', ({ reason }) => {
+        console.log('Call declined', reason);
+        showAlert('Call declined by recipient.', 'error');
+    });
+
+    // Session reminders/notifications
+    socket.on('session-notification', (payload) => {
+        try {
+            console.log('Received session notification:', payload);
+            if (payload?.type === 'session-reminder') {
+                showAlert(`Reminder: "${payload.topic}" starts in ${payload.minutes} minutes.`, 'info');
+                showSessionReminderPopup(payload);
+            } else if (payload?.type === 'session-start') {
+                showAlert(`Session starting now: "${payload.topic}"`, 'success');
+            }
+        } catch (e) { console.error('Error handling session-notification', e); }
+    });
+
+    // Meeting link notifications (5 minutes before)
+    socket.on('session-meeting-link', (payload) => {
+        try {
+            console.log('Received meeting link notification:', payload);
+            showAlert(`Meeting ready: "${payload.topic}" starts in ${payload.minutes} minutes. Click to join!`, 'success');
+            showMeetingLinkPopup(payload);
+        } catch (e) { console.error('Error handling session-meeting-link', e); }
     });
 
     // Handle sending chat messages
@@ -371,7 +514,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (sendChatButton) {
         sendChatButton.addEventListener('click', () => {
             sendChatMessage(chatMessageInput.value);
-            chatMessageInput.value = '';
         });
     }
 
@@ -379,7 +521,6 @@ document.addEventListener('DOMContentLoaded', async function() {
         chatMessageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 sendChatMessage(chatMessageInput.value);
-                chatMessageInput.value = '';
             }
         });
     }
@@ -434,11 +575,28 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 // Set up form event listeners
 function setupFormEventListeners() {
-    // Login form
-    const loginForm = document.getElementById('login-form');
-    if (loginForm) {
-        loginForm.addEventListener('submit', handleLogin);
-    }
+    console.log('Setting up form event listeners...');
+    
+    // Use a slight delay to ensure DOM is ready
+    setTimeout(() => {
+        // Login form
+        const loginForm = document.getElementById('login-form');
+        console.log('Login form found:', !!loginForm);
+        if (loginForm) {
+            // Remove any existing listeners first
+            loginForm.removeEventListener('submit', handleLogin);
+            loginForm.addEventListener('submit', handleLogin);
+            console.log('Login form event listener attached');
+        } else {
+            console.error('Login form not found!');
+        }
+        
+        // Also set up other forms
+        setupOtherFormListeners();
+    }, 100);
+}
+
+function setupOtherFormListeners() {
 
     // Signup form
     const signupForm = document.getElementById('signup-form');
@@ -475,6 +633,13 @@ function setupFormEventListeners() {
 let currentView = 'landing';
 let selectedSessionTab = 'browse';
 let selectedChatRecipient = null; // Stores the currently selected user for private chat
+// WebRTC state
+let peerConnection = null;
+let localStream = null;
+let remoteStream = null;
+let currentRoomId = null;
+let usingScreenShare = false;
+let originalVideoTrack = null;
 
 // Navigation functions
 function showLandingPage() {
@@ -483,10 +648,99 @@ function showLandingPage() {
     currentView = 'landing';
 }
 
+function showChat() {
+    hideAllPages();
+    document.getElementById('chat-page').classList.remove('hidden');
+    currentView = 'chat';
+    
+    // Reset chat state
+    currentChatRecipient = null;
+    document.getElementById('new-chat-selection').classList.remove('hidden');
+    document.getElementById('chat-empty-state').classList.remove('hidden');
+    document.getElementById('active-chat-window').classList.add('hidden');
+    
+    // Load chat list and setup event listeners
+    loadChatList();
+    setupChatEventListeners();
+}
+
 function showLogin() {
     hideAllPages();
     document.getElementById('login-page').classList.remove('hidden');
     currentView = 'login';
+    
+    // Ensure form listeners are set up when login page is shown
+    setTimeout(() => {
+        setupLoginForm();
+    }, 100);
+}
+
+function setupLoginForm() {
+    console.log('Setting up login form specifically...');
+    
+    const loginForm = document.getElementById('login-form');
+    const submitButton = document.querySelector('#login-form button[type="submit"]');
+    
+    console.log('Login form found:', !!loginForm);
+    console.log('Submit button found:', !!submitButton);
+    
+    if (loginForm) {
+        // Remove existing listeners
+        loginForm.removeEventListener('submit', handleLogin);
+        // Add new listener
+        loginForm.addEventListener('submit', handleLogin);
+        console.log('Form submit listener added');
+    }
+    
+    if (submitButton) {
+        // Ensure button is clickable
+        submitButton.style.pointerEvents = 'auto';
+        submitButton.style.cursor = 'pointer';
+        
+        // Add click listener as backup
+        submitButton.removeEventListener('click', handleLoginButtonClick);
+        submitButton.addEventListener('click', handleLoginButtonClick);
+        console.log('Button click listener added');
+        
+        // Also add mousedown listener as another backup
+        submitButton.addEventListener('mousedown', function(e) {
+            console.log('Login button mousedown detected');
+        });
+    }
+}
+
+function handleLoginButtonClick(event) {
+    console.log('Login button clicked directly');
+    event.preventDefault();
+    
+    const form = document.getElementById('login-form');
+    if (form) {
+        // Trigger form submission
+        const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+        form.dispatchEvent(submitEvent);
+    } else {
+        // Handle login directly
+        handleLoginDirect();
+    }
+}
+
+function handleLoginDirect() {
+    console.log('Handling login directly');
+    
+    const identifier = document.getElementById('login-identifier').value;
+    const password = document.getElementById('login-password').value;
+
+    console.log('Login attempt with identifier:', identifier);
+
+    if (!identifier || !password) {
+        showAlert('Please enter both email/username and password', 'error');
+        return;
+    }
+
+    login(identifier, password).catch(error => {
+        console.error('Login error:', error);
+        showAlert('Login failed: ' + (error.message || 'Unknown error'), 'error');
+    });
 }
 
 function showSignup() {
@@ -525,74 +779,367 @@ function showEditSession(sessionId) {
 function showVideoConference(sessionId, topic) {
     hideAllPages();
     document.getElementById('video-conference-page').classList.remove('hidden');
-    document.getElementById('conference-topic').textContent = topic;
+    document.getElementById('conference-topic').textContent = topic || 'Session Meeting';
     currentView = 'video-conference';
-    
-    // Initialize Jitsi Meet
-    const domain = 'meet.jit.si'; // Using public Jitsi Meet instance
-    const options = {
-        roomName: `feynman-learn-${sessionId}`,
-        width: '100%',
-        height: '100%',
-        parentNode: document.querySelector('#jitsi-container'),
-        configOverwrite: {},
-        interfaceConfigOverwrite: {
-            // Optional: customize Jitsi Meet UI
-            DEFAULT_BACKGROUND_IMAGE: 'https://feynmanlearn.com/background.jpg',
-            APPLICATION_NAME: 'Feynman Learn',
-            NATIVE_APP_NAME: 'Feynman Learn',
-            TOOLBAR_BUTTONS: [
-                'microphone', 'camera', 'desktop', 'fullscreen',
-                'fodeviceselection', 'hangup', 'profile', 'chat', 'raisehand',
-                'sharedvideo', 'settings', 'tileview', 'toggle-camera'
-            ],
-        },
-    };
-    const api = new JitsiMeetExternalAPI(domain, options);
-
-    // Handle Jitsi API events (optional)
-    api.addEventListener('videoConferenceJoined', (response) => {
-        console.log('Jitsi conference joined', response);
-    });
-    api.addEventListener('readyToClose', () => {
-        console.log('Jitsi conference ready to close');
-        showDashboard(); // Go back to dashboard when conference ends
-    });
+    const roomId = `feynman-learn-session-${sessionId}`;
+    startWebRTCCall(roomId, { audio: true, video: true });
 }
 
 function startPrivateVideoCall(recipientId, recipientName) {
+    if (!currentUser || !recipientId) {
+        showAlert('Unable to start call', 'error');
+        return;
+    }
+    
+    const sortedIds = [currentUser.id, recipientId].sort();
+    const roomId = `feynman-learn-private-${sortedIds.join('-')}`;
+    
+    console.log('Starting video call to:', recipientName, 'Room:', roomId);
+    console.log('Current user:', currentUser);
+    console.log('Socket connected:', window.appSocket?.connected);
+    
+    // Notify callee first
+    const callPayload = {
+        toUserId: recipientId,
+        fromUserId: currentUser.id,
+        fromName: currentUser.name,
+        mediaType: 'video',
+        roomId: roomId,
+    };
+    
+    console.log('Sending call payload:', callPayload);
+    window.appSocket?.emit('initiate-private-call', callPayload);
+    
+    // Show calling state
+    showAlert(`Calling ${recipientName}...`, 'info');
+    
+    // Start the call interface
     hideAllPages();
     document.getElementById('video-conference-page').classList.remove('hidden');
-    document.getElementById('conference-topic').textContent = `Call with ${recipientName}`;
+    document.getElementById('conference-topic').textContent = `Video Call with ${recipientName}`;
     currentView = 'video-conference';
+    
+    startWebRTCCall(roomId, { audio: true, video: true });
+}
 
-    const domain = 'meet.jit.si';
-    const options = {
-        roomName: `feynman-learn-private-${currentUser.id}-${recipientId}`,
-        width: '100%',
-        height: '100%',
-        parentNode: document.querySelector('#jitsi-container'),
-        configOverwrite: {},
-        interfaceConfigOverwrite: {
-            DEFAULT_BACKGROUND_IMAGE: 'https://feynmanlearn.com/background.jpg',
-            APPLICATION_NAME: 'Feynman Learn',
-            NATIVE_APP_NAME: 'Feynman Learn',
-            TOOLBAR_BUTTONS: [
-                'microphone', 'camera', 'desktop', 'fullscreen',
-                'fodeviceselection', 'hangup', 'profile', 'chat', 'raisehand',
-                'sharedvideo', 'settings', 'tileview', 'toggle-camera'
-            ],
-        },
+function startPrivateVoiceCall(recipientId, recipientName) {
+    if (!currentUser || !recipientId) {
+        showAlert('Unable to start call', 'error');
+        return;
+    }
+    
+    const sortedIds = [currentUser.id, recipientId].sort();
+    const roomId = `feynman-learn-private-${sortedIds.join('-')}`;
+    
+    console.log('Starting voice call to:', recipientName, 'Room:', roomId);
+    
+    // Notify callee first
+    window.appSocket?.emit('initiate-private-call', {
+        toUserId: recipientId,
+        fromUserId: currentUser.id,
+        fromName: currentUser.name,
+        mediaType: 'audio',
+        roomId: roomId,
+    });
+    
+    // Show calling state
+    showAlert(`Calling ${recipientName}...`, 'info');
+    
+    // Start the call interface
+    hideAllPages();
+    document.getElementById('video-conference-page').classList.remove('hidden');
+    document.getElementById('conference-topic').textContent = `Voice Call with ${recipientName}`;
+    currentView = 'video-conference';
+    
+    startWebRTCCall(roomId, { audio: true, video: false });
+}
+
+// UI prompt for incoming private calls
+function showIncomingCallPrompt(payload) {
+    try {
+        console.log('Showing incoming call prompt:', payload);
+        
+        // Remove existing prompt if any
+        const old = document.getElementById('incoming-call-overlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'incoming-call-overlay';
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.right = '0';
+        overlay.style.bottom = '0';
+        overlay.style.background = 'rgba(0,0,0,0.5)';
+        overlay.style.zIndex = '9999';
+        overlay.style.display = 'flex';
+        overlay.style.alignItems = 'center';
+        overlay.style.justifyContent = 'center';
+
+        const box = document.createElement('div');
+        box.style.background = '#fff';
+        box.style.padding = '20px';
+        box.style.borderRadius = '8px';
+        box.style.maxWidth = '400px';
+        box.style.textAlign = 'center';
+        box.innerHTML = `
+            <h3>Incoming ${payload.mediaType === 'audio' ? 'Voice' : 'Video'} Call</h3>
+            <p>${payload.fromName || 'Someone'} is calling you.</p>
+            <div style="display:flex; gap:12px; justify-content:center; margin-top:16px;">
+                <button id="btn-accept-call" class="btn btn--primary">Accept</button>
+                <button id="btn-decline-call" class="btn btn--secondary">Decline</button>
+            </div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        document.getElementById('btn-accept-call').onclick = async () => {
+            try {
+                window.appSocket?.emit('call-accepted', { toUserId: payload.fromUserId, roomId: payload.roomId });
+                // Navigate to call UI and start call
+                hideAllPages();
+                document.getElementById('video-conference-page').classList.remove('hidden');
+                document.getElementById('conference-topic').textContent = `Call with ${payload.fromName || 'User'}`;
+                currentView = 'video-conference';
+                await startWebRTCCall(payload.roomId, { audio: true, video: payload.mediaType !== 'audio' });
+            } finally {
+                overlay.remove();
+            }
+        };
+        document.getElementById('btn-decline-call').onclick = () => {
+            window.appSocket?.emit('call-declined', { toUserId: payload.fromUserId, reason: 'busy' });
+            overlay.remove();
+        };
+    } catch (e) {
+        console.error('Error showing incoming call prompt', e);
+        const accept = confirm(`${payload.fromName || 'Someone'} is calling you. Accept?`);
+        if (accept) {
+            window.appSocket?.emit('call-accepted', { toUserId: payload.fromUserId, roomId: payload.roomId });
+            hideAllPages();
+            document.getElementById('video-conference-page').classList.remove('hidden');
+            document.getElementById('conference-topic').textContent = `Call with ${payload.fromName || 'User'}`;
+            currentView = 'video-conference';
+            startWebRTCCall(payload.roomId, { audio: true, video: payload.mediaType !== 'audio' });
+        } else {
+            window.appSocket?.emit('call-declined', { toUserId: payload.fromUserId, reason: 'declined' });
+        }
+    }
+}
+
+async function startWebRTCCall(roomId, mediaConstraints) {
+    currentRoomId = roomId;
+    // Bind control handlers
+    bindCallControls();
+    await ensureLocalMedia(mediaConstraints);
+    await ensurePeerConnection();
+    window.appSocket.emit('join-call', roomId);
+    // If someone is already in the room, creating an offer will start negotiation on our side
+    await createAndSendOffer();
+}
+
+async function ensureLocalMedia(constraints) {
+    if (localStream) {
+        // Update tracks according to constraints
+        const wantVideo = !!constraints.video;
+        const hasVideo = localStream.getVideoTracks().length > 0;
+        if (wantVideo && !hasVideo) {
+            const cam = await navigator.mediaDevices.getUserMedia({ video: true });
+            cam.getVideoTracks().forEach(t => localStream.addTrack(t));
+        }
+        return localStream;
+    }
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const localVideo = document.getElementById('localVideo');
+    if (localVideo) localVideo.srcObject = localStream;
+    return localStream;
+}
+
+async function ensurePeerConnection() {
+    if (peerConnection) return peerConnection;
+    peerConnection = new RTCPeerConnection({
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+        ]
+    });
+    // Local tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    }
+    // Remote stream
+    remoteStream = new MediaStream();
+    const remoteVideo = document.getElementById('remoteVideo');
+    if (remoteVideo) remoteVideo.srcObject = remoteStream;
+    peerConnection.addEventListener('track', (event) => {
+        event.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+    });
+    // ICE
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate && currentRoomId) {
+            window.appSocket.emit('ice-candidate', event.candidate, currentRoomId);
+        }
     };
-    const api = new JitsiMeetExternalAPI(domain, options);
+    // Negotiationneeded
+    peerConnection.onnegotiationneeded = async () => {
+        await createAndSendOffer();
+    };
+    return peerConnection;
+}
 
-    api.addEventListener('videoConferenceJoined', (response) => {
-        console.log('Jitsi private conference joined', response);
-    });
-    api.addEventListener('readyToClose', () => {
-        console.log('Jitsi private conference ready to close');
+async function createAndSendOffer() {
+    if (!peerConnection || !currentRoomId) return;
+    try {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        window.appSocket.emit('offer', offer, currentRoomId);
+    } catch (e) {
+        console.error('Error creating offer', e);
+    }
+}
+
+function bindCallControls() {
+    const audioBtn = document.getElementById('btn-toggle-audio');
+    const videoBtn = document.getElementById('btn-toggle-video');
+    const screenBtn = document.getElementById('btn-screenshare');
+    const endBtn = document.getElementById('btn-end-call');
+    const exitBtn = document.getElementById('btn-exit-call');
+    
+    if (audioBtn && !audioBtn.dataset.bound) {
+        audioBtn.addEventListener('click', toggleAudio);
+        audioBtn.dataset.bound = 'true';
+    }
+    if (videoBtn && !videoBtn.dataset.bound) {
+        videoBtn.addEventListener('click', toggleVideo);
+        videoBtn.dataset.bound = 'true';
+    }
+    if (screenBtn && !screenBtn.dataset.bound) {
+        screenBtn.addEventListener('click', toggleScreenShare);
+        screenBtn.dataset.bound = 'true';
+    }
+    if (endBtn && !endBtn.dataset.bound) {
+        endBtn.addEventListener('click', endCallAndBack);
+        endBtn.dataset.bound = 'true';
+    }
+    if (exitBtn && !exitBtn.dataset.bound) {
+        exitBtn.addEventListener('click', endCallAndBack);
+        exitBtn.dataset.bound = 'true';
+    }
+}
+
+function toggleAudio() {
+    if (!localStream) return;
+    const audioTracks = localStream.getAudioTracks();
+    audioTracks.forEach(t => t.enabled = !t.enabled);
+    const anyEnabled = audioTracks.some(t => t.enabled);
+    const btn = document.getElementById('btn-toggle-audio');
+    btn.textContent = anyEnabled ? '🎤' : '🔇';
+    btn.classList.toggle('muted', !anyEnabled);
+}
+
+function toggleVideo() {
+    if (!localStream) return;
+    const videoTracks = localStream.getVideoTracks();
+    videoTracks.forEach(t => t.enabled = !t.enabled);
+    const anyEnabled = videoTracks.some(t => t.enabled);
+    const btn = document.getElementById('btn-toggle-video');
+    btn.textContent = anyEnabled ? '📹' : '📷';
+    btn.classList.toggle('disabled', !anyEnabled);
+}
+
+async function toggleScreenShare() {
+    if (!peerConnection) return;
+    if (!usingScreenShare) {
+        try {
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const screenTrack = displayStream.getVideoTracks()[0];
+            // Replace sender track
+            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender) {
+                originalVideoTrack = sender.track;
+                await sender.replaceTrack(screenTrack);
+                usingScreenShare = true;
+                screenTrack.onended = () => {
+                    // Revert when screenshare ends
+                    stopScreenShare();
+                };
+                document.getElementById('btn-screenshare').textContent = 'Stop Sharing';
+            }
+        } catch (e) {
+            console.error('Error starting screen share', e);
+        }
+    } else {
+        stopScreenShare();
+    }
+}
+
+async function stopScreenShare() {
+    if (!peerConnection || !usingScreenShare) return;
+    const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (sender && originalVideoTrack) {
+        await sender.replaceTrack(originalVideoTrack);
+    }
+    usingScreenShare = false;
+    originalVideoTrack = null;
+    document.getElementById('btn-screenshare').textContent = 'Share Screen';
+}
+
+function copyInviteLink() {
+    if (!currentRoomId) return;
+    const url = new URL(window.location.href);
+    url.hash = `#call=${encodeURIComponent(currentRoomId)}`;
+    navigator.clipboard.writeText(url.toString());
+    showAlert('Invite link copied to clipboard', 'success');
+}
+
+function endCallAndBack() {
+    console.log('Ending call and going back to dashboard');
+    
+    try {
+        // Leave room
+        if (currentRoomId) {
+            window.appSocket?.emit('leave-call', currentRoomId);
+            console.log('Left room:', currentRoomId);
+        }
+
+        // Stop local stream
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                track.stop();
+                console.log('Stopped track:', track.kind);
+            });
+            localStream = null;
+        }
+
+        // Close peer connection
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+            console.log('Closed peer connection');
+        }
+
+        // Clear video elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (localVideo) {
+            localVideo.srcObject = null;
+            localVideo.pause();
+        }
+        if (remoteVideo) {
+            remoteVideo.srcObject = null;
+            remoteVideo.pause();
+        }
+
+        // Reset state
+        currentRoomId = null;
+        usingScreenShare = false;
+
+        // Go back to dashboard
         showDashboard();
-    });
+        showAlert('Call ended', 'info');
+        
+    } catch (error) {
+        console.error('Error ending call:', error);
+        showDashboard(); // Still try to go back
+    }
 }
 
 function hideAllPages() {
@@ -602,16 +1149,24 @@ function hideAllPages() {
 
 // Authentication handlers
 async function handleLogin(event) {
+    console.log('Login form submitted');
     event.preventDefault();
+    
     const form = event.target;
     const identifier = document.getElementById('login-identifier').value;
     const password = document.getElementById('login-password').value;
 
+    console.log('Login attempt with identifier:', identifier);
+
+    if (!identifier || !password) {
+        showAlert('Please enter both email/username and password', 'error');
+        return;
+    }
+
     try {
         showAlert('Logging in...', 'info');
         await login(identifier, password);
-        showAlert('Login successful!', 'success');
-        showDashboard();
+        // Note: login function already shows success message and navigates
     } catch (error) {
         console.error('Login error:', error);
         showAlert('Login failed: ' + (error.message || 'Unknown error'), 'error');
@@ -805,30 +1360,29 @@ async function handleEnrollInSession(sessionId) {
 
     try {
         showAlert('Enrolling in session...', 'info');
-        await enrollInSession(sessionId);
+        const result = await enrollInSession(sessionId);
         
-        // Immediately update the local sessions array to reflect enrollment
-        const sessionIndex = sessions.findIndex(s => (s.id === sessionId || s._id === sessionId));
-        if (sessionIndex !== -1) {
-            // Add current user to participants if not already there
-            const session = sessions[sessionIndex];
-            if (!session.participants) {
-                session.participants = [];
-            }
-            
-            const isAlreadyEnrolled = session.participants.some(p => {
-                if (typeof p === 'string') {
-                    return p === currentUser.id;
-                } else if (p.user) {
-                    return p.user === currentUser.id || p.user.toString() === currentUser.id;
-                }
-                return false;
-            });
-            
-            if (!isAlreadyEnrolled) {
-                session.participants.push(currentUser.id);
-            }
-        }
+        // Get session details for the bot message
+        const sessionData = await apiRequest(`/sessions/${sessionId}`);
+        const session = sessionData.session;
+        
+        // Send Feynman bot message about enrollment
+        const botMessage = `🎓 Great! You've enrolled in "${session.topic}" scheduled for ${formatDate(session.date)} at ${formatTime(session.date)}. I'll notify you when it's time to join!`;
+        
+        // Create bot message in database
+        const message = {
+            senderId: 'bot',
+            senderName: 'Feynman Bot',
+            senderUsername: 'feynman_bot',
+            text: botMessage,
+            recipientId: currentUser.id,
+            recipientUsername: currentUser.username,
+            timestamp: new Date().toISOString(),
+            isBot: true
+        };
+        
+        // Send via socket to save in database and display
+        window.appSocket?.emit('chat-message', message);
         
         // Refresh sessions from backend to get complete updated data
         await getSessions();
@@ -933,11 +1487,11 @@ function displaySessions(sessionsList, container, isOwner = false) {
         if (isCreator) {
             actionButton = `<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`;
         } else if (isEnrolled) {
-            actionButton = '<span class="enrollment-status">Enrolled</span>';
+            actionButton = '<span class="enrollment-status">Already Enrolled</span>';
         } else if (isFull) {
             actionButton = '<span class="enrollment-status">Full</span>';
         } else if (session.status === 'ongoing') {
-            actionButton = `<button class="btn btn--primary btn--sm" onclick="showVideoConference('${session.id || session._id}', '${session.topic}')">Join Now</button>`;
+            actionButton = `<button class="btn btn--primary btn--sm" onclick="showVideoConference('${session.id || session._id}', '${session.topic.replace(/'/g, "\\'")}')">Join Now</button>`;
         } else {
             actionButton = `<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`;
         }
@@ -1079,89 +1633,397 @@ function findPrefixRange(sortedArray, prefix) {
     const results = [];
     for (let i = start; i < end && results.length < 10; i++) {
         if (sortedArray[i].username.startsWith(p)) results.push(sortedArray[i]);
-        else break;
     }
     return results;
 }
 
+// Global variables for new chat system
+let currentChatRecipient = null;
+let chatList = [];
+
 function updateChatUI() {
-    console.log('Updating chat UI...');
+    console.log('Updating new WhatsApp-style chat UI...');
+    
+    // Load and display chat list
+    loadChatList();
+    
+    // Show empty state initially
+    showChatEmptyState();
+    
+    // Attach event listeners
+    setupChatEventListeners();
+}
 
-    // Get references to main chat sections
-    const chatMainArea = document.getElementById('chat-main-area');
-    const chatNewMessageSection = document.getElementById('chat-new-message-section');
-    const activeChatWindow = document.getElementById('active-chat-window');
-    const existingChatsList = document.getElementById('existing-chats-list');
-    const startPrivateVideoCallBtn = document.getElementById('start-private-video-call-btn');
-
-    // Always show the main chat area when chat tab is active
-    chatMainArea?.classList.remove('hidden');
-
-    // By default, show existing chats and general chat
-    chatNewMessageSection?.classList.add('hidden');
-    activeChatWindow?.classList.remove('hidden');
-    selectedChatRecipient = null; // Ensure no recipient is selected initially
-    document.getElementById('chat-recipient-name').textContent = 'General Chat';
-    document.getElementById('chat-recipient-details').innerHTML = '';
-    document.getElementById('chat-messages').innerHTML = '';
-    loadGeneralChatHistory('general-chat');
-    startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button for general chat
-
-    // Update existing chats list
-    fetchAndDisplayExistingChats();
-
-    // Preload usernames for suggestions
-    ensureAllUsernamesLoaded();
-
-    // Attach event listeners if not already attached
+function setupChatEventListeners() {
+    // New chat button
     const startNewChatBtn = document.getElementById('start-new-chat-btn');
     if (startNewChatBtn && !startNewChatBtn.dataset.listenersAttached) {
-        startNewChatBtn.addEventListener('click', () => {
-            // Show new message section, hide active chat window
-            chatNewMessageSection?.classList.remove('hidden');
-            activeChatWindow?.classList.add('hidden');
-            document.getElementById('chat-user-search-input').value = ''; // Clear search input
-            document.getElementById('chat-user-suggestions').innerHTML = ''; // Clear suggestions
-            selectedChatRecipient = null;
-
-            // Remove active state from all existing chat items
-            document.querySelectorAll('.existing-chat-item').forEach(item => item.classList.remove('active'));
-            document.getElementById('chat-recipient-name').textContent = 'Select a user to chat';
-            document.getElementById('chat-recipient-details').innerHTML = '';
-            document.getElementById('chat-messages').innerHTML = '';
-            startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button
-        });
+        startNewChatBtn.addEventListener('click', showNewChatSelection);
         startNewChatBtn.dataset.listenersAttached = 'true';
     }
-
-    const backToExistingChatsBtn = document.getElementById('back-to-existing-chats-btn');
-    if (backToExistingChatsBtn && !backToExistingChatsBtn.dataset.listenersAttached) {
-        backToExistingChatsBtn.addEventListener('click', () => {
-            // Hide new message section, show active chat window (revert to general chat)
-            chatNewMessageSection?.classList.add('hidden');
-            activeChatWindow?.classList.remove('hidden');
-            selectedChatRecipient = null;
-            document.getElementById('chat-recipient-name').textContent = 'General Chat';
-            document.getElementById('chat-recipient-details').innerHTML = '';
-            document.getElementById('chat-messages').innerHTML = '';
-            loadGeneralChatHistory('general-chat');
-
-            // Set general chat as active
-            document.querySelector('.existing-chat-item[data-chat-type="general"]')?.classList.add('active');
-            startPrivateVideoCallBtn?.classList.add('hidden'); // Hide video call button
-        });
-        backToExistingChatsBtn.dataset.listenersAttached = 'true';
+    
+    // Back to chat list button
+    const backToChatListBtn = document.getElementById('back-to-chat-list');
+    if (backToChatListBtn && !backToChatListBtn.dataset.listenersAttached) {
+        backToChatListBtn.addEventListener('click', showChatEmptyState);
+        backToChatListBtn.dataset.listenersAttached = 'true';
     }
-
-    // Attach event listeners for chat user search input if not already attached
-    const chatUserSearchInput = document.getElementById('chat-user-search-input');
-    if (chatUserSearchInput && !chatUserSearchInput.dataset.listenersAttached) {
-        chatUserSearchInput.addEventListener('input', (e) => {
+    
+    // User search input
+    const userSearchInput = document.getElementById('user-search-input');
+    if (userSearchInput && !userSearchInput.dataset.listenersAttached) {
+        userSearchInput.addEventListener('input', (e) => {
             clearTimeout(chatUserSearchTimeout);
-            chatUserSearchTimeout = setTimeout(() => searchUsersForSuggestions(e.target.value), 300);
+            chatUserSearchTimeout = setTimeout(() => searchUsersForNewChat(e.target.value), 300);
         });
-        chatUserSearchInput.dataset.listenersAttached = 'true';
+        userSearchInput.dataset.listenersAttached = 'true';
     }
+    
+    // Chat search input
+    const chatSearchInput = document.getElementById('chat-search-input');
+    if (chatSearchInput && !chatSearchInput.dataset.listenersAttached) {
+        chatSearchInput.addEventListener('input', (e) => {
+            filterChatList(e.target.value);
+        });
+        chatSearchInput.dataset.listenersAttached = 'true';
+    }
+    
+    // Send message button and input
+    const sendChatButton = document.getElementById('send-chat-button');
+    const chatMessageInput = document.getElementById('chat-message-input');
+    
+    if (sendChatButton && !sendChatButton.dataset.listenersAttached) {
+        sendChatButton.addEventListener('click', sendMessage);
+        sendChatButton.dataset.listenersAttached = 'true';
+    }
+    
+    if (chatMessageInput && !chatMessageInput.dataset.listenersAttached) {
+        chatMessageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        chatMessageInput.dataset.listenersAttached = 'true';
+    }
+    
+    // Call buttons
+    const startVideoCallBtn = document.getElementById('start-video-call-btn');
+    const startVoiceCallBtn = document.getElementById('start-voice-call-btn');
+    
+    if (startVideoCallBtn && !startVideoCallBtn.dataset.listenersAttached) {
+        startVideoCallBtn.addEventListener('click', () => {
+            console.log('Video call button clicked');
+            if (currentChatRecipient) {
+                console.log('Starting video call with:', currentChatRecipient.name);
+                startPrivateVideoCall(currentChatRecipient._id, currentChatRecipient.name);
+            } else {
+                console.log('No current chat recipient');
+                showAlert('Please select a chat first', 'error');
+            }
+        });
+        startVideoCallBtn.dataset.listenersAttached = 'true';
+    }
+    
+    if (startVoiceCallBtn && !startVoiceCallBtn.dataset.listenersAttached) {
+        startVoiceCallBtn.addEventListener('click', () => {
+            console.log('Voice call button clicked');
+            if (currentChatRecipient) {
+                console.log('Starting voice call with:', currentChatRecipient.name);
+                startPrivateVoiceCall(currentChatRecipient._id, currentChatRecipient.name);
+            } else {
+                console.log('No current chat recipient');
+                showAlert('Please select a chat first', 'error');
+            }
+        });
+        startVoiceCallBtn.dataset.listenersAttached = 'true';
+    }
+}
+
+async function loadChatList() {
+    try {
+        const data = await apiRequest('/chat/recent');
+        chatList = data.recentChats || [];
+        displayChatList(chatList);
+    } catch (error) {
+        console.error('Failed to load chat list:', error);
+        chatList = [];
+        displayChatList([]);
+    }
+}
+
+function displayChatList(chats) {
+    const chatListContainer = document.getElementById('chat-list');
+    if (!chatListContainer) return;
+    
+    if (chats.length === 0) {
+        chatListContainer.innerHTML = '<div class="empty-chat-list">No chats yet. Start a new conversation!</div>';
+        return;
+    }
+    
+    chatListContainer.innerHTML = chats.map(chat => {
+        const avatar = chat.name.charAt(0).toUpperCase();
+        const lastMessage = chat.lastMessage || 'No messages yet';
+        const preview = lastMessage.length > 40 ? lastMessage.substring(0, 40) + '...' : lastMessage;
+        
+        return `
+            <div class="chat-list-item" data-user-id="${chat._id}" onclick="selectChat('${chat._id}')">
+                <div class="chat-list-item-avatar">${avatar}</div>
+                <div class="chat-list-item-content">
+                    <div class="chat-list-item-name">${chat.name}</div>
+                    <div class="chat-list-item-preview">${preview}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function filterChatList(query) {
+    if (!query.trim()) {
+        displayChatList(chatList);
+        return;
+    }
+    
+    const filtered = chatList.filter(chat => 
+        chat.name.toLowerCase().includes(query.toLowerCase())
+    );
+    displayChatList(filtered);
+}
+
+function showNewChatSelection() {
+    document.getElementById('new-chat-selection').classList.remove('hidden');
+    document.getElementById('active-chat-window').classList.add('hidden');
+    document.getElementById('chat-empty-state').classList.add('hidden');
+    
+    // Clear and focus search
+    const userSearchInput = document.getElementById('user-search-input');
+    if (userSearchInput) {
+        userSearchInput.value = '';
+        userSearchInput.focus();
+    }
+    
+    // Clear suggestions
+    document.getElementById('user-suggestions').innerHTML = '';
+}
+
+function showChatEmptyState() {
+    document.getElementById('new-chat-selection').classList.add('hidden');
+    document.getElementById('active-chat-window').classList.add('hidden');
+    document.getElementById('chat-empty-state').classList.remove('hidden');
+    
+    // Clear active chat selection
+    document.querySelectorAll('.chat-list-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    
+    currentChatRecipient = null;
+}
+
+async function searchUsersForNewChat(query) {
+    const userSuggestionsContainer = document.getElementById('user-suggestions');
+    if (!userSuggestionsContainer) return;
+    
+    if (query.trim() === '') {
+        userSuggestionsContainer.innerHTML = '';
+        return;
+    }
+    
+    try {
+        const data = await apiRequest(`/users/search?q=${encodeURIComponent(query)}`);
+        const users = data.users || [];
+        
+        userSuggestionsContainer.innerHTML = users.map(user => {
+            const avatar = user.name.charAt(0).toUpperCase();
+            return `
+                <div class="user-suggestion-item" onclick="startChatWithUser('${user._id}')">
+                    <div class="user-suggestion-avatar">${avatar}</div>
+                    <div class="user-suggestion-content">
+                        <h4>${user.name}</h4>
+                        <p>@${user.username || user.email}</p>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (error) {
+        console.error('Failed to search users:', error);
+        userSuggestionsContainer.innerHTML = '<div class="error-message">Failed to search users</div>';
+    }
+}
+
+async function startChatWithUser(userId) {
+    try {
+        // Get user details
+        const userData = await apiRequest(`/users/${userId}`);
+        const user = userData.user;
+        
+        // Add to chat list if not already there
+        const existingChat = chatList.find(chat => chat._id === userId);
+        if (!existingChat) {
+            chatList.unshift({
+                _id: user._id,
+                name: user.name,
+                username: user.username,
+                lastMessage: ''
+            });
+            displayChatList(chatList);
+        }
+        
+        // Select this chat
+        selectChat(userId);
+        
+    } catch (error) {
+        console.error('Failed to start chat:', error);
+        showAlert('Failed to start chat', 'error');
+    }
+}
+
+async function selectChat(userId, userName, userUsername) {
+    try {
+        console.log('Selecting chat with user:', userName, 'ID:', userId);
+        
+        // Get user details
+        const userData = await apiRequest(`/users/${userId}`);
+        currentChatRecipient = userData.user;
+        
+        console.log('Current chat recipient set to:', currentChatRecipient);
+        
+        // Update UI
+        document.getElementById('new-chat-selection').classList.add('hidden');
+        document.getElementById('chat-empty-state').classList.add('hidden');
+        document.getElementById('active-chat-window').classList.remove('hidden');
+        
+        // Update chat header
+        document.getElementById('chat-recipient-name').textContent = currentChatRecipient.name;
+        document.getElementById('chat-recipient-details').innerHTML = `
+            <p>@${currentChatRecipient.username}</p>
+            <p>${currentChatRecipient.schoolGrade} • ${currentChatRecipient.subjectInterests?.join(', ') || 'No subjects listed'}</p>
+        `;
+        
+        // Update active state in chat list
+        document.querySelectorAll('.chat-list-item').forEach(item => {
+            item.classList.remove('active');
+        });
+        document.querySelector(`[data-user-id="${userId}"]`)?.classList.add('active');
+        
+        // Load chat history
+        await loadChatHistory(userId);
+        
+        // Focus on message input
+        const messageInput = document.getElementById('chat-message-input');
+        if (messageInput) {
+            messageInput.focus();
+        }
+        
+    } catch (error) {
+        console.error('Failed to select chat:', error);
+        showAlert('Failed to load chat', 'error');
+    }
+}
+
+async function loadChatHistory(recipientId) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    
+    console.log('Loading chat history for recipient:', recipientId);
+    chatMessagesContainer.innerHTML = '<div class="loading-message">Loading messages...</div>';
+    
+    try {
+        const data = await apiRequest(`/chat/history/${recipientId}`);
+        const messages = data.messages || [];
+        
+        console.log('Loaded chat history:', messages.length, 'messages');
+        chatMessagesContainer.innerHTML = '';
+        
+        messages.forEach(message => {
+            // Transform message format for display
+            const displayMessage = {
+                _id: message._id,
+                senderId: message.sender ? message.sender.toString() : message.senderId,
+                senderName: message.senderName,
+                senderUsername: message.senderUsername,
+                text: message.text,
+                timestamp: message.timestamp,
+                recipientId: message.recipient ? message.recipient.toString() : message.recipientId,
+                recipientUsername: message.recipientUsername,
+                isBot: message.senderName === 'Feynman Bot' || message.senderId === 'bot'
+            };
+            displayChatMessage(displayMessage);
+        });
+        
+        // Scroll to bottom
+        chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+        
+    } catch (error) {
+        console.error('Failed to load chat history:', error);
+        chatMessagesContainer.innerHTML = '<div class="error-message">Failed to load messages. Please try again.</div>';
+    }
+}
+
+function displayChatMessage(message) {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    
+    const isOwn = message.senderId === currentUser?.id || message.sender === currentUser?.id;
+    const isBot = message.senderId === 'bot' || message.isBot || message.senderName === 'Feynman Bot';
+    
+    // Only display if this is the current chat
+    if (currentChatRecipient) {
+        if (isBot && currentChatRecipient._id === 'feynman-bot') {
+            // Show bot message in bot chat
+        } else if (!isBot) {
+            const isForCurrentChat = (message.senderId === currentChatRecipient._id || message.recipientId === currentChatRecipient._id);
+            if (!isForCurrentChat) return;
+        } else {
+            return; // Don't show bot messages in regular chats
+        }
+    }
+    
+    const messageElement = document.createElement('div');
+    messageElement.classList.add('chat-message');
+    
+    if (isBot) {
+        messageElement.classList.add('chat-message--bot');
+        messageElement.innerHTML = `${message.text}`;
+    } else if (isOwn) {
+        messageElement.classList.add('chat-message--own');
+        messageElement.textContent = message.text;
+    } else {
+        messageElement.classList.add('chat-message--other');
+        messageElement.innerHTML = `<strong>${message.senderName}:</strong> ${message.text}`;
+    }
+    
+    chatMessagesContainer.appendChild(messageElement);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+}
+
+function sendChatMessage() {
+    const input = document.getElementById('chat-message-input');
+    const messageText = input.value.trim();
+    
+    if (!messageText || !currentChatRecipient) {
+        console.log('Cannot send message - missing text or recipient');
+        return;
+    }
+    
+    console.log('Sending chat message to:', currentChatRecipient.name);
+    
+    const message = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderUsername: currentUser.username,
+        text: messageText,
+        recipientId: currentChatRecipient._id,
+        recipientUsername: currentChatRecipient.username,
+        timestamp: new Date().toISOString(),
+        localId: Date.now() // For optimistic UI updates
+    };
+    
+    console.log('Message payload:', message);
+    
+    // Send via socket to save in database
+    window.appSocket?.emit('chat-message', message);
+    
+    // Clear input
+    input.value = '';
 }
 
 async function fetchAndDisplayExistingChats() {
@@ -1420,20 +2282,28 @@ function sendChatMessage(messageText) {
         message.recipientUsername = selectedChatRecipient.username;
         // Use global socket reference
         window.appSocket?.emit('chat-message', message);
-        // Optimistically display in the current private chat view
-        displayChatMessage({ ...message }, true);
+        // Refresh private chat history shortly after sending to reflect DB save
+        setTimeout(() => {
+            loadPrivateChatHistory(selectedChatRecipient._id);
+        }, 150);
     } else {
         // Send to general chat
         const outgoing = { ...message, sessionId: 'general-chat' };
         window.appSocket?.emit('chat-message', outgoing);
-        // Optimistically display in general chat view
-        displayChatMessage(outgoing, false);
+        // Refresh general chat history shortly after sending
+        setTimeout(() => {
+            loadGeneralChatHistory('general-chat');
+        }, 150);
     }
+
+    // Clear the input box after sending; message will appear when server echoes it back
+    const chatMessageInput = document.getElementById('chat-message-input');
+    if (chatMessageInput) chatMessageInput.value = '';
 }
 
 function updateNotesUI() {
     console.log('Updating notes UI...');
-    fetchAndDisplayAllNotes(); // Changed to fetch all notes
+    fetchAndDisplayAllNotes(); // Fetch combined notes from backend
 
     // Event listeners for notes
     document.getElementById('create-note-btn')?.addEventListener('click', () => {
@@ -1443,12 +2313,6 @@ function updateNotesUI() {
         hideNoteEditor();
     });
     document.getElementById('save-note-btn')?.addEventListener('click', handleSaveNote);
-    document.getElementById('export-notes-pdf-btn')?.addEventListener('click', exportNotesToPdf);
-
-    document.getElementById('import-pdf-btn')?.addEventListener('click', () => {
-        document.getElementById('import-pdf-input').click();
-    });
-    document.getElementById('import-pdf-input')?.addEventListener('change', handlePdfImport);
 }
 
 async function fetchAndDisplayNotes() {
@@ -1495,10 +2359,9 @@ async function fetchAndDisplayAllNotes() {
     notesListContainer.innerHTML = ''; // Clear previous notes
 
     try {
-        const privateNotesData = await apiRequest('/notes'); // Assuming this fetches private notes
-        const publicNotesData = await apiRequest('/notes/public'); // Assuming this fetches public notes
-
-        const allNotes = [...(privateNotesData.notes || []), ...(publicNotesData.notes || [])];
+        // Backend /notes already returns combined private + public notes for this user
+        const data = await apiRequest('/notes');
+        const allNotes = data.notes || [];
 
         if (allNotes.length === 0) {
             notesListContainer.innerHTML = '<p class="empty-state">No notes found. Create one!</p>';
@@ -1513,13 +2376,21 @@ async function fetchAndDisplayAllNotes() {
             if (note.isPublic) {
                 noteElement.classList.add('note-card--public');
             }
+            const publicBadge = note.isPublic ? '<span class="note-public-badge">Public</span>' : '';
+            const editButtons = note.owner === currentUser?.id ? `
+                <button class="btn btn--sm btn--secondary" onclick="editNote('${note._id}')">Edit</button>
+                <button class="btn btn--sm btn--danger" onclick="deleteNote('${note._id}')">Delete</button>
+            ` : '';
+            const pdfButton = (note.pdf && note.pdf.path) ? `
+                <button class="btn btn--sm" onclick="downloadNotePdf('${note._id}', '${(note.pdf.originalName || (note.title + '.pdf')).replace(/[^a-z0-9_.-]/gi, '_')}')">Download PDF</button>
+            ` : '';
             noteElement.innerHTML = `
-                <h3>${note.title} ${note.isPublic ? '<span class="note-public-badge">Public</span>' : ''}</h3>
+                <h3>${note.title} ${publicBadge}</h3>
                 <p>${note.content}</p>
                 <div class="note-actions">
-                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--secondary" onclick="editNote('${note._id}')">Edit</button>` : ''}
-                    ${note.owner === currentUser?.id ? `<button class="btn btn--sm btn--danger" onclick="deleteNote('${note._id}')">Delete</button>` : ''}
+                    ${editButtons}
                     <button class="btn btn--sm btn--primary" onclick="downloadNote('${note._id}', '${note.title}')">Download</button>
+                    ${pdfButton}
                 </div>
             `;
             notesListContainer.appendChild(noteElement);
@@ -1569,8 +2440,6 @@ function showNoteEditor(note = null) {
     document.getElementById('notes-list')?.classList.add('hidden');
     document.getElementById('note-editor')?.classList.remove('hidden');
     document.getElementById('create-note-btn')?.classList.add('hidden');
-    document.getElementById('export-notes-pdf-btn')?.classList.add('hidden');
-    document.getElementById('import-pdf-btn')?.classList.add('hidden');
 
     const noteTitleInput = document.getElementById('note-title-input');
     const noteContentInput = document.getElementById('note-content-input');
@@ -1590,14 +2459,17 @@ function hideNoteEditor() {
     document.getElementById('notes-list')?.classList.remove('hidden');
     document.getElementById('note-editor')?.classList.add('hidden');
     document.getElementById('create-note-btn')?.classList.remove('hidden');
-    document.getElementById('export-notes-pdf-btn')?.classList.remove('hidden');
-    document.getElementById('import-pdf-btn')?.classList.remove('hidden');
     currentEditingNoteId = null;
+    // Clear file input if present
+    const attachInput = document.getElementById('attach-pdf-input');
+    if (attachInput) attachInput.value = '';
 }
 
 async function handleSaveNote() {
     const title = document.getElementById('note-title-input').value;
     const content = document.getElementById('note-content-input').value;
+    const attachInput = document.getElementById('attach-pdf-input');
+    const attachFile = attachInput && attachInput.files && attachInput.files[0] ? attachInput.files[0] : null;
 
     if (!title.trim() || !content.trim()) {
         showAlert('Note title and content cannot be empty.', 'error');
@@ -1612,13 +2484,22 @@ async function handleSaveNote() {
                 method: 'PUT',
                 body: JSON.stringify({ title, content })
             });
+            // If a file is selected, attach/replace the PDF on this note
+            if (attachFile) {
+                await attachPdfToNote(currentEditingNoteId, attachFile);
+            }
             showAlert('Note updated successfully!', 'success');
         } else {
             // Create new note (default to not public)
-            await apiRequest('/notes', {
+            const createRes = await apiRequest('/notes', {
                 method: 'POST',
                 body: JSON.stringify({ title, content, isPublic: false })
             });
+            const newNoteId = createRes?.note?._id;
+            // If a file is selected, attach it to the newly created note
+            if (attachFile && newNoteId) {
+                await attachPdfToNote(newNoteId, attachFile);
+            }
             showAlert('Note created successfully!', 'success');
         }
         hideNoteEditor();
@@ -1760,5 +2641,496 @@ async function downloadNote(noteId, noteTitle) {
     } catch (error) {
         console.error('Error downloading note:', error);
         showAlert('Failed to download note: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+// Upload a new note directly from a PDF file (creates a new Note)
+async function handlePdfUploadNewNote(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+        showAlert('Uploading PDF as a new note...', 'info');
+        const fd = new FormData();
+        fd.append('pdf', file);
+        // Optional: let backend infer title from file name; can also add custom title
+        const response = await fetch(`${API_BASE_URL}/notes/upload`, {
+            method: 'POST',
+            body: fd,
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to upload PDF');
+        showAlert('PDF uploaded and saved as a note!', 'success');
+        fetchAndDisplayAllNotes();
+    } catch (error) {
+        console.error('Error uploading PDF:', error);
+        showAlert('Failed to upload PDF: ' + (error.message || 'Unknown error'), 'error');
+    } finally {
+        // reset input
+        event.target.value = '';
+    }
+}
+
+async function attachPdfToNote(noteId, file) {
+    const fd = new FormData();
+    fd.append('pdf', file);
+    const response = await fetch(`${API_BASE_URL}/notes/${noteId}/attach-pdf`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || 'Failed to attach PDF');
+    }
+    return data.note;
+}
+
+async function downloadNotePdf(noteId, filename) {
+    try {
+        const response = await fetch(`${API_BASE_URL}/notes/download-pdf/${noteId}`, { credentials: 'include' });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to download PDF');
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'note.pdf';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        showAlert('PDF downloaded successfully!', 'success');
+    } catch (error) {
+        console.error('Error downloading PDF:', error);
+        showAlert('Failed to download PDF: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+// Session reminder popup (15 minutes before)
+function showSessionReminderPopup(payload) {
+    try {
+        // Remove existing popup if any
+        const old = document.getElementById('session-reminder-popup');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'session-reminder-popup';
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.right = '0';
+        overlay.style.bottom = '0';
+        overlay.style.background = 'rgba(0,0,0,0.5)';
+        overlay.style.zIndex = '9999';
+        overlay.style.display = 'flex';
+        overlay.style.alignItems = 'center';
+        overlay.style.justifyContent = 'center';
+
+        const box = document.createElement('div');
+        box.style.background = '#fff';
+        box.style.padding = '24px';
+        box.style.borderRadius = '12px';
+        box.style.maxWidth = '400px';
+        box.style.textAlign = 'center';
+        box.style.boxShadow = '0 10px 25px rgba(0,0,0,0.2)';
+        box.innerHTML = `
+            <h3 style="margin: 0 0 16px 0; color: #333;">📚 Session Reminder</h3>
+            <p style="margin: 0 0 16px 0; color: #666;">Your session "<strong>${payload.topic}</strong>" starts in ${payload.minutes} minutes!</p>
+            <p style="margin: 0 0 20px 0; color: #888; font-size: 14px;">Get ready to join the session.</p>
+            <div style="display:flex; gap:12px; justify-content:center;">
+                <button id="btn-dismiss-reminder" class="btn btn--secondary">Got it</button>
+                <button id="btn-view-session" class="btn btn--primary">View Session</button>
+            </div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        document.getElementById('btn-dismiss-reminder').onclick = () => {
+            overlay.remove();
+        };
+        
+        document.getElementById('btn-view-session').onclick = () => {
+            overlay.remove();
+            // Switch to sessions tab
+            showSessionsTab('my-sessions');
+        };
+
+        // Auto-dismiss after 10 seconds
+        setTimeout(() => {
+            if (document.getElementById('session-reminder-popup')) {
+                overlay.remove();
+            }
+        }, 10000);
+
+    } catch (e) {
+        console.error('Error showing session reminder popup', e);
+    }
+}
+
+// Meeting link popup (5 minutes before)
+function showMeetingLinkPopup(payload) {
+    try {
+        // Remove existing popup if any
+        const old = document.getElementById('meeting-link-popup');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'meeting-link-popup';
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.right = '0';
+        overlay.style.bottom = '0';
+        overlay.style.background = 'rgba(0,0,0,0.5)';
+        overlay.style.zIndex = '9999';
+        overlay.style.display = 'flex';
+        overlay.style.alignItems = 'center';
+        overlay.style.justifyContent = 'center';
+
+        const box = document.createElement('div');
+        box.style.background = '#fff';
+        box.style.padding = '24px';
+        box.style.borderRadius = '12px';
+        box.style.maxWidth = '400px';
+        box.style.textAlign = 'center';
+        box.style.boxShadow = '0 10px 25px rgba(0,0,0,0.2)';
+        box.innerHTML = `
+            <h3 style="margin: 0 0 16px 0; color: #333;">🎥 Session Ready</h3>
+            <p style="margin: 0 0 16px 0; color: #666;">Your session "<strong>${payload.topic}</strong>" starts in ${payload.minutes} minutes!</p>
+            <p style="margin: 0 0 20px 0; color: #888; font-size: 14px;">Join the video conference now.</p>
+            <div style="display:flex; gap:12px; justify-content:center;">
+                <button id="btn-dismiss-meeting" class="btn btn--secondary">Later</button>
+                <button id="btn-join-meeting" class="btn btn--primary">Join Now</button>
+            </div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        document.getElementById('btn-dismiss-meeting').onclick = () => {
+            overlay.remove();
+        };
+        
+        document.getElementById('btn-join-meeting').onclick = () => {
+            overlay.remove();
+            // Join the session video conference
+            showVideoConference(payload.sessionId, payload.topic);
+        };
+
+        // Auto-dismiss after 15 seconds
+        setTimeout(() => {
+            if (document.getElementById('meeting-link-popup')) {
+                overlay.remove();
+            }
+        }, 15000);
+
+    } catch (e) {
+        console.error('Error showing meeting link popup', e);
+    }
+}
+
+// Test function to verify Socket.IO is working
+function testSocketConnection() {
+    if (!window.appSocket) {
+        console.error('Socket not initialized');
+        return false;
+    }
+    
+    if (!window.appSocket.connected) {
+        console.error('Socket not connected');
+        return false;
+    }
+    
+    if (!currentUser) {
+        console.error('No current user');
+        return false;
+    }
+    
+    console.log('Socket connection test passed');
+    console.log('Socket ID:', window.appSocket.id);
+    console.log('Current user:', currentUser.id);
+    
+    // Test emit
+    window.appSocket.emit('test-message', { userId: currentUser.id, message: 'Test from frontend' });
+    
+    return true;
+}
+
+// Make test function available globally for debugging
+window.testSocketConnection = testSocketConnection;
+
+// Test function for session notifications
+function testSessionNotification() {
+    if (!window.appSocket || !window.appSocket.connected) {
+        console.error('Socket not connected');
+        return;
+    }
+    
+    // Simulate a session reminder
+    const testPayload = {
+        type: 'session-reminder',
+        sessionId: 'test-session-id',
+        topic: 'Test Session',
+        date: new Date(),
+        minutes: 15
+    };
+    
+    console.log('Triggering test session notification');
+    window.appSocket.emit('test-session-notification', testPayload);
+}
+
+// Test function for bot message
+function testBotMessage() {
+    if (!window.appSocket || !window.appSocket.connected) {
+        console.error('Socket not connected');
+        return;
+    }
+    
+    const testMessage = {
+        senderId: 'bot',
+        senderName: 'Feynman Bot',
+        senderUsername: 'feynman_bot',
+        text: '🤖 This is a test bot message!',
+        recipientId: currentUser?.id,
+        recipientUsername: currentUser?.username,
+        timestamp: new Date().toISOString(),
+        isBot: true
+    };
+    
+    console.log('Triggering test bot message');
+    window.appSocket.emit('chat-message', testMessage);
+}
+
+// Function to check connected users
+function checkConnectedUsers() {
+    if (!window.appSocket || !window.appSocket.connected) {
+        console.error('Socket not connected');
+        return;
+    }
+    
+    console.log('Checking connected users...');
+    window.appSocket.emit('check-connected-users');
+}
+
+// Test call function
+function testCall(recipientUserId) {
+    if (!window.appSocket || !window.appSocket.connected) {
+        console.error('Socket not connected');
+        return;
+    }
+    
+    if (!currentUser) {
+        console.error('No current user');
+        return;
+    }
+    
+    const callPayload = {
+        toUserId: recipientUserId,
+        fromUserId: currentUser.id,
+        fromName: currentUser.name,
+        mediaType: 'video',
+        roomId: `test-room-${Date.now()}`,
+    };
+    
+    console.log('Sending test call:', callPayload);
+    window.appSocket.emit('initiate-private-call', callPayload);
+}
+
+// Test login function
+function testLogin() {
+    console.log('Testing login functionality...');
+    const loginForm = document.getElementById('login-form');
+    console.log('Login form exists:', !!loginForm);
+    
+    if (loginForm) {
+        console.log('Form action:', loginForm.action);
+        console.log('Form method:', loginForm.method);
+        console.log('Form event listeners:', loginForm.cloneNode().outerHTML);
+    }
+    
+    const identifierInput = document.getElementById('login-identifier');
+    const passwordInput = document.getElementById('login-password');
+    const submitButton = document.querySelector('#login-form button[type="submit"]');
+    
+    console.log('Identifier input exists:', !!identifierInput);
+    console.log('Password input exists:', !!passwordInput);
+    console.log('Submit button exists:', !!submitButton);
+    
+    if (identifierInput) console.log('Identifier value:', identifierInput.value);
+    if (passwordInput) console.log('Password value:', passwordInput.value);
+    
+    // Test button click
+    if (submitButton) {
+        console.log('Testing button click...');
+        submitButton.click();
+    }
+}
+
+// Force login with test credentials
+function forceTestLogin() {
+    console.log('Force testing login...');
+    
+    // Fill in test values
+    const identifierInput = document.getElementById('login-identifier');
+    const passwordInput = document.getElementById('login-password');
+    
+    if (identifierInput && passwordInput) {
+        identifierInput.value = 'test@example.com';
+        passwordInput.value = 'testpassword';
+        
+        console.log('Test values filled, attempting login...');
+        handleLoginDirect();
+    } else {
+        console.error('Could not find login inputs');
+    }
+}
+
+// Test message saving
+function testMessageSaving() {
+    if (!currentUser || !currentChatRecipient) {
+        console.error('Need to be logged in and have a chat selected');
+        return;
+    }
+    
+    const testMessage = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderUsername: currentUser.username,
+        text: `Test message at ${new Date().toLocaleTimeString()}`,
+        recipientId: currentChatRecipient._id,
+        recipientUsername: currentChatRecipient.username,
+        timestamp: new Date().toISOString(),
+        localId: Date.now()
+    };
+    
+    console.log('Sending test message:', testMessage);
+    window.appSocket?.emit('chat-message', testMessage);
+}
+
+// Test chat history loading
+async function testChatHistory() {
+    if (!currentChatRecipient) {
+        console.error('Need to have a chat selected');
+        return;
+    }
+    
+    console.log('Testing chat history loading for:', currentChatRecipient._id);
+    
+    try {
+        const data = await apiRequest(`/chat/history/${currentChatRecipient._id}`);
+        console.log('Chat history loaded:', data);
+        return data;
+    } catch (error) {
+        console.error('Failed to load chat history:', error);
+    }
+}
+
+// Make test functions available globally
+window.testSessionNotification = testSessionNotification;
+window.testBotMessage = testBotMessage;
+window.checkConnectedUsers = checkConnectedUsers;
+window.testCall = testCall;
+window.testLogin = testLogin;
+window.forceTestLogin = forceTestLogin;
+window.setupLoginForm = setupLoginForm;
+window.testMessageSaving = testMessageSaving;
+window.testChatHistory = testChatHistory;
+
+// Add Feynman Bot to chat list
+function addFeynmanBotToChat() {
+    const chatListContainer = document.getElementById('chat-list');
+    if (!chatListContainer) return;
+    
+    // Check if bot is already in the list
+    if (document.querySelector('[data-user-id="feynman-bot"]')) return;
+    
+    const botChatItem = document.createElement('div');
+    botChatItem.className = 'chat-list-item';
+    botChatItem.setAttribute('data-user-id', 'feynman-bot');
+    botChatItem.onclick = () => selectBotChat();
+    botChatItem.innerHTML = `
+        <div class="chat-list-item-avatar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">🤖</div>
+        <div class="chat-list-item-content">
+            <div class="chat-list-item-name">Feynman Bot</div>
+            <div class="chat-list-item-preview">Welcome! I'll help you with session updates.</div>
+        </div>
+    `;
+    
+    // Add at the top of the list
+    chatListContainer.insertBefore(botChatItem, chatListContainer.firstChild);
+}
+
+// Update bot chat preview
+function updateBotChatPreview(text) {
+    const botChatItem = document.querySelector('[data-user-id="feynman-bot"]');
+    if (botChatItem) {
+        const preview = botChatItem.querySelector('.chat-list-item-preview');
+        if (preview) {
+            const previewText = text.length > 40 ? text.substring(0, 40) + '...' : text;
+            preview.textContent = previewText;
+        }
+    }
+}
+
+// Select bot chat
+function selectBotChat() {
+    currentChatRecipient = {
+        _id: 'feynman-bot',
+        name: 'Feynman Bot',
+        username: 'feynman_bot'
+    };
+    
+    // Update UI
+    document.getElementById('new-chat-selection').classList.add('hidden');
+    document.getElementById('chat-empty-state').classList.add('hidden');
+    document.getElementById('active-chat-window').classList.remove('hidden');
+    
+    // Update chat header
+    document.getElementById('chat-recipient-name').textContent = 'Feynman Bot';
+    document.getElementById('chat-recipient-details').innerHTML = `
+        <p>Your AI assistant for session updates</p>
+    `;
+    
+    // Update active state in chat list
+    document.querySelectorAll('.chat-list-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    document.querySelector('[data-user-id="feynman-bot"]')?.classList.add('active');
+    
+    // Load bot chat history
+    loadBotChatHistory();
+}
+
+// Load bot chat history
+async function loadBotChatHistory() {
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) return;
+    
+    chatMessagesContainer.innerHTML = '';
+    
+    try {
+        // Get bot messages for current user
+        const data = await apiRequest(`/chat/bot-messages`);
+        const messages = data.messages || [];
+        
+        messages.forEach(message => {
+            displayChatMessage(message);
+        });
+        
+        // Scroll to bottom
+        chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+        
+    } catch (error) {
+        console.error('Failed to load bot chat history:', error);
+        // Show welcome message if no history
+        const welcomeMessage = {
+            senderId: 'bot',
+            senderName: 'Feynman Bot',
+            text: '🤖 Hello! I\'m Feynman Bot. I\'ll keep you updated about your sessions and help you stay organized.',
+            isBot: true
+        };
+        displayChatMessage(welcomeMessage);
     }
 }

@@ -96,6 +96,10 @@ const sessionSchema = new mongoose.Schema({
     startNotificationSent: {
         type: Boolean,
         default: false
+    },
+    meetingLinkSent: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true,

@@ -9,7 +9,7 @@ const messageSchema = new mongoose.Schema({
     sender: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
+        required: false, // Allow null for bot messages
     },
     senderName: {
         type: String,

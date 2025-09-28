@@ -45,6 +45,43 @@ router.get('/private/:recipientId', protect, async (req, res) => {
     }
 });
 
+// Get chat history with a specific user (alias for private chat)
+router.get('/history/:recipientId', protect, async (req, res) => {
+    try {
+        const { recipientId } = req.params;
+        const userId = req.user.id; // Current authenticated user
+
+        console.log(`Loading chat history between ${userId} and ${recipientId}`);
+
+        // Special case for Feynman Bot
+        if (recipientId === 'feynman-bot') {
+            const messages = await Message.find({
+                sender: null,
+                recipient: userId,
+                senderName: 'Feynman Bot'
+            }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp');
+
+            console.log(`Found ${messages.length} bot messages`);
+            res.json({ messages });
+            return;
+        }
+
+        const messages = await Message.find({
+            $or: [
+                { sender: userId, recipient: recipientId },
+                { sender: recipientId, recipient: userId }
+            ]
+        }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp');
+
+        console.log(`Found ${messages.length} messages between users`);
+        res.json({ messages });
+    } catch (error) {
+        console.error('Error fetching chat history:', error);
+        console.error('Error details:', error.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Get recent chat partners (users with whom current user has chatted)
 router.get('/recent', protect, async (req, res) => {
     try {
@@ -95,6 +132,22 @@ router.get('/recent', protect, async (req, res) => {
 
     } catch (error) {
         console.error('Error fetching recent chat partners:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get bot messages for current user
+router.get('/bot-messages', protect, async (req, res) => {
+    try {
+        const messages = await Message.find({
+            recipient: req.user.id,
+            sender: null, // Bot messages have no sender
+            senderName: 'Feynman Bot'
+        }).sort({ timestamp: 1 });
+
+        res.json({ messages });
+    } catch (error) {
+        console.error('Error fetching bot messages:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

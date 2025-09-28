@@ -242,42 +242,65 @@
 
                         <!-- Chat Tab Content -->
                         <div id="chat" class="tab-content hidden">
-                            <div class="chat-container">
-                                <div class="chat-sidebar">
-                                    <h3>Existing Chats</h3>
-                                    <ul id="existing-chats-list" class="existing-chats-list">
-                                        <!-- Existing chats (General and private) will be populated here -->
-                                        <li class="existing-chat-item active" data-chat-type="general">
-                                            <h4>General Chat</h4>
-                                            <p>Click to view general discussions.</p>
-                                        </li>
-                                    </ul>
-                                    <button class="btn btn--primary btn--full-width" id="start-new-chat-btn">Start New Chat</button>
+                            <div class="chat-container-whatsapp">
+                                <!-- Left Sidebar - Chat List -->
+                                <div class="chat-sidebar-left">
+                                    <div class="chat-sidebar-header">
+                                        <h3>Chats</h3>
+                                        <button class="btn btn--primary btn--sm" id="start-new-chat-btn">+ New Chat</button>
+                                    </div>
+                                    <div class="chat-search">
+                                        <input type="text" id="chat-search-input" class="form-control" placeholder="Search chats...">
+                                    </div>
+                                    <div id="chat-list" class="chat-list">
+                                        <!-- Chat list items will be populated here -->
+                                    </div>
                                 </div>
-                                <div id="chat-main-area" class="chat-main hidden">
-                                    <div class="chat-user-selection-container hidden" id="chat-new-message-section">
-                                        <input type="text" id="chat-user-search-input" class="form-control" placeholder="Search or select user...">
-                                        <ul id="chat-user-suggestions" class="user-suggestions-list">
+                                
+                                <!-- Right Panel - Active Chat -->
+                                <div class="chat-main-right">
+                                    <!-- New Chat User Selection -->
+                                    <div id="new-chat-selection" class="new-chat-selection hidden">
+                                        <div class="new-chat-header">
+                                            <button class="btn btn--secondary btn--sm" id="back-to-chat-list">← Back</button>
+                                            <h3>New Chat</h3>
+                                        </div>
+                                        <div class="user-search">
+                                            <input type="text" id="user-search-input" class="form-control" placeholder="Search users...">
+                                        </div>
+                                        <div id="user-suggestions" class="user-suggestions">
                                             <!-- User suggestions will be populated here -->
-                                        </ul>
-                                        <button class="btn btn--secondary btn--sm" id="back-to-existing-chats-btn">← Back to Chats</button>
+                                        </div>
                                     </div>
 
-                                    <div id="active-chat-window">
+                                    <!-- Active Chat Window -->
+                                    <div id="active-chat-window" class="active-chat-window hidden">
                                         <div id="chat-header" class="chat-header">
-                                            <h3 id="chat-recipient-name">General Chat</h3>
-                                            <div id="chat-recipient-details" class="chat-recipient-details">
-                                                <!-- Recipient details (grade, subjects) will be populated here -->
+                                            <div class="chat-header-info">
+                                                <h3 id="chat-recipient-name">Select a chat</h3>
+                                                <div id="chat-recipient-details" class="chat-recipient-details">
+                                                    <!-- Recipient details will be populated here -->
+                                                </div>
                                             </div>
-                                            <button class="btn btn--sm btn--secondary hidden" id="start-private-video-call-btn">Start Video Call</button>
-                                            <button class="btn btn--sm btn--secondary hidden" id="start-private-voice-call-btn">Start Voice Call</button>
+                                            <div class="chat-header-actions">
+                                                <button class="btn btn--sm btn--secondary" id="start-voice-call-btn">📞</button>
+                                                <button class="btn btn--sm btn--secondary" id="start-video-call-btn">📹</button>
+                                            </div>
                                         </div>
                                         <div id="chat-messages" class="chat-messages">
                                             <!-- Chat messages will be populated here -->
                                         </div>
-                                        <div class="chat-input">
+                                        <div class="chat-input-container">
                                             <input type="text" id="chat-message-input" placeholder="Type your message..." class="form-control">
                                             <button id="send-chat-button" class="btn btn--primary">Send</button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Empty State -->
+                                    <div id="chat-empty-state" class="chat-empty-state">
+                                        <div class="empty-state-content">
+                                            <h3>Welcome to Feynman Learn Chat</h3>
+                                            <p>Select a chat to start messaging or create a new chat</p>
                                         </div>
                                     </div>
                                 </div>
@@ -289,9 +312,6 @@
                             <div class="section-header">
                                 <h3>Notes</h3>
                                 <button class="btn btn--primary" id="create-note-btn">New Note</button>
-                                <button class="btn btn--secondary" id="export-notes-pdf-btn">Export to PDF</button>
-                                <input type="file" id="import-pdf-input" accept=".pdf" style="display: none;">
-                                <button class="btn btn--secondary" id="import-pdf-btn">Import PDF</button>
                             </div>
                             <div id="notes-list" class="notes-list">
                                 <!-- Notes will be populated here -->
@@ -299,6 +319,10 @@
                             <div id="note-editor" class="note-editor hidden">
                                 <input type="text" id="note-title-input" class="form-control" placeholder="Note Title">
                                 <textarea id="note-content-input" class="form-control" placeholder="Write your notes here..."></textarea>
+                                <div class="form-group">
+                                    <label class="form-label" for="attach-pdf-input">Attach/Replace PDF (optional)</label>
+                                    <input type="file" id="attach-pdf-input" accept=".pdf" class="form-control">
+                                </div>
                                 <button class="btn btn--primary" id="save-note-btn">Save Note</button>
                                 <button class="btn btn--secondary" id="cancel-note-btn">Cancel</button>
                             </div>
@@ -422,15 +446,28 @@
             </div>
         </div>
 
-        <!-- Video Conference Page -->
+        <!-- Video Conference Page (WebRTC) -->
         <div id="video-conference-page" class="page hidden">
-            <div class="container">
-                <div class="video-conference-content">
-                    <div class="page-header">
-                        <h2 id="conference-topic">Video Conference</h2>
-                        <button class="btn btn--secondary" onclick="showDashboard()">← Back to Dashboard</button>
+            <div class="video-conference-container">
+                <div class="video-conference-header">
+                    <h2 id="conference-topic">Video Conference</h2>
+                    <button class="btn btn--danger" id="btn-exit-call">✕ Exit</button>
+                </div>
+                <div class="video-grid">
+                    <div class="video-container">
+                        <video id="localVideo" autoplay playsinline muted></video>
+                        <div class="video-label">You</div>
                     </div>
-                    <div id="jitsi-container" style="height: 600px; width: 100%;"></div>
+                    <div class="video-container">
+                        <video id="remoteVideo" autoplay playsinline></video>
+                        <div class="video-label">Other User</div>
+                    </div>
+                </div>
+                <div class="call-controls">
+                    <button id="btn-toggle-audio" class="control-btn">🎤</button>
+                    <button id="btn-toggle-video" class="control-btn">📹</button>
+                    <button id="btn-screenshare" class="control-btn">🖥️</button>
+                    <button id="btn-end-call" class="control-btn end-call">📞</button>
                 </div>
             </div>
         </div>
@@ -441,7 +478,6 @@
         </div>
     </div>
 
-    <script src="https://meet.jit.si/external_api.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>

@@ -40,6 +40,31 @@ router.get('/', optionalAuth, async (req, res) => {
     }
 });
 
+// Get single session by ID
+router.get('/:id', optionalAuth, async (req, res) => {
+    try {
+        const session = await Session.findById(req.params.id)
+            .populate('creator', 'name email')
+            .populate('participants.user', 'name');
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        const sessionObj = session.toObject();
+        if (req.user) {
+            sessionObj.isEnrolled = session.isUserEnrolled(req.user._id);
+            sessionObj.isCreator = session.isCreator(req.user._id);
+        }
+
+        res.json({ session: sessionObj });
+
+    } catch (error) {
+        console.error('Get session error:', error);
+        res.status(500).json({ error: 'Failed to fetch session' });
+    }
+});
+
 // Create new session
 router.post('/', authMiddleware, [
     body('topic').trim().isLength({ min: 3, max: 100 }),
