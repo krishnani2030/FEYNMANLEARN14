@@ -208,4 +208,101 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req, res) =
     }
 });
 
+// API endpoint for sending chat messages (fallback when Ably isn't used directly)
+router.post('/send', authMiddleware, async (req, res) => {
+    try {
+        const { recipientId, text, sessionId, messageType = 'text' } = req.body;
+        const userId = req.user._id.toString();
+        
+        // Validate required fields
+        if (!text || !text.trim()) {
+            return res.status(400).json({ error: 'Message text is required' });
+        }
+
+        // Build message data
+        const messageData = {
+            sessionId: sessionId || null,
+            sender: userId,
+            senderName: req.user.name,
+            senderUsername: req.user.username,
+            text: text.trim(),
+            recipient: recipientId || null,
+            recipientUsername: null // Will be populated when loading user details
+        };
+
+        // If sending to a recipient, store recipient username
+        if (recipientId) {
+            const recipient = await User.findById(recipientId).select('username');
+            if (recipient) {
+                messageData.recipientUsername = recipient.username;
+            }
+        }
+
+        console.log('Saving message via API endpoint:', messageData);
+        
+        // Save message to database
+        const newMessage = new Message(messageData);
+        await newMessage.save();
+        
+        // Prepare response (emitting to clients happens separately via Ably)
+        const responseMessage = {
+            _id: newMessage._id.toString(),
+            senderId: userId,
+            senderName: newMessage.senderName,
+            senderUsername: newMessage.senderUsername,
+            text: newMessage.text,
+            timestamp: newMessage.timestamp,
+            recipientId: newMessage.recipient?.toString(),
+            recipientUsername: newMessage.recipientUsername,
+            sessionId: newMessage.sessionId?.toString() || null,
+            isBot: false
+        };
+
+        res.json({ success: true, message: responseMessage });
+        
+        // Optionally emit to connected clients via Socket.IO service (for real-time delivery)
+        try {
+            if (recipientId) {
+                // Private message - use Socket.IO service
+                if (global.socketService) {
+                    await global.socketService.sendPrivateMessage(userId, recipientId, responseMessage);
+                }
+            } else if (sessionId) {
+                // Session message - use Socket.IO service
+                if (global.socketService) {
+                    await global.socketService.sendSessionMessage(sessionId, responseMessage);
+                }
+            } else {
+                // General chat message - broadcast to all
+                if (global.socketService && global.socketService.io) {
+                    global.socketService.io.to('general-chat').emit('chat-message', responseMessage);
+                }
+            }
+        } catch (emitError) {
+            console.error('Error emitting message via Socket.IO service:', emitError);
+            // Non-critical error - message is still saved to DB
+        }
+        
+    } catch (error) {
+        console.error('Error saving message via API:', error);
+        res.status(500).json({ error: 'Failed to save message' });
+    }
+});
+
+// Clear all messages (for testing/debugging)
+router.delete('/clear-all', authMiddleware, async (req, res) => {
+    try {
+        const result = await Message.deleteMany({});
+        console.log(`🗑️ Cleared ${result.deletedCount} messages from database`);
+        res.json({ 
+            success: true, 
+            deletedCount: result.deletedCount,
+            message: 'All messages cleared successfully'
+        });
+    } catch (error) {
+        console.error('Error clearing messages:', error);
+        res.status(500).json({ error: 'Failed to clear messages' });
+    }
+});
+
 module.exports = router;

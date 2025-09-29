@@ -6,7 +6,7 @@
   "scripts": {
     "start": "cd backend && npm start",
     "frontend": "cd frontend && npm run dev",
-    "dev": "cd backend && PORT=5050 nodemon server.js",
+    "dev": "cd backend && PORT=3030 nodemon server.js",
     "test": "echo 'No tests defined yet'",
     "run": "concurrently \"npm run dev\" \"npm run frontend\"",
     "seed": "cd backend && npm run seed",

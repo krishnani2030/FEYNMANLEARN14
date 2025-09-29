@@ -22,11 +22,11 @@ const userRoutes = require('./routes/users');
 const chatRoutes = require('./routes/chat');
 const notesRoutes = require('./routes/notes');
 const mediasoupRoutes = require('./routes/mediasoup');
-const ablyRoutes = require('./routes/ably');
+const socketRoutes = require('./routes/socket');
 const { notifySessionStart, setSocketIo } = require('./services/notificationService');
 const { checkOngoingSessions } = require('./services/sessionService');
 const mediasoupService = require('./services/mediasoupService');
-const ablyService = require('./services/ablyService');
+const socketService = require('./services/socketService');
 
 const app = express();
 const server = require('http').createServer(app);
@@ -47,12 +47,24 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],
-            scriptSrcAttr: ["'unsafe-inline'"], // This fixes the onclick handlers
+            scriptSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                "'unsafe-eval'",
+                "http://localhost:3000"
+            ],
+            scriptSrcAttr: ["'unsafe-inline'"],
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-            imgSrc: ["'self'", "data:", "https:"],
-            connectSrc: ["'self'", "ws:", "wss:"],
-            fontSrc: ["'self'", "https://fonts.gstatic.com"]
+            imgSrc: ["'self'", "data:", "https:", "http:"],
+            connectSrc: [
+                "'self'",
+                "ws://localhost:3000",
+                "wss://localhost:3000",
+                "http://localhost:3000"
+            ],
+            fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+            frameSrc: ["'self'", "https://meet.google.com", "http://localhost:3000"],
+            workerSrc: ["'self'", "blob:"]
         }
     }
 }));
@@ -144,13 +156,16 @@ mongoose.connect(rawMongoUri, {
         process.exit(1);
     }
 
-    // Initialize Ably
+    // Initialize Socket.IO service
     try {
-        ablyService.init();
-        console.log('✅ Ably service initialized');
+        socketService.init(io);
+        socketService.setupSocketHandlers(); // Add this line to set up the handlers
+        console.log('✅ Socket.IO service initialized');
+        // Make socketService available globally so routes can access it
+        global.socketService = socketService;
     } catch (error) {
-        console.error('❌ Failed to initialize Ably:', error);
-        // Don't exit - Ably is optional for basic functionality
+        console.error('❌ Failed to initialize Socket.IO service:', error);
+        // Don't exit - continue with basic functionality
     }
 
     // Start the server only after a successful DB connection
@@ -171,7 +186,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/notes', notesRoutes);
 app.use('/api/mediasoup', mediasoupRoutes);
-app.use('/api/ably', ablyRoutes);
+app.use('/api/socket', socketRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -345,7 +360,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chat-message', async (message) => {
-        console.log('Received chat message:', message);
+        console.log('SERVER: Received chat message:', message);
         
         // Validate required fields
         if (!message.text || !message.senderName) {
@@ -390,61 +405,211 @@ io.on('connection', (socket) => {
                 isBot: message.senderId === 'bot' || message.isBot
             };
 
-            console.log('Emitting message to clients:', emittedMessage);
+            console.log('Sending message via Socket.IO:', emittedMessage);
 
+            // Use Socket.IO service to send the message
             if (newMessage.recipient) {
-                // Private message: deliver to recipient and echo to sender (if not bot)
-                console.log(`Sending private message to recipient: ${newMessage.recipient.toString()}`);
-                io.to(newMessage.recipient.toString()).emit('chat-message', emittedMessage);
-                
-                if (message.senderId !== 'bot' && newMessage.sender) {
-                    console.log(`Echoing message to sender: ${newMessage.sender.toString()}`);
-                    io.to(newMessage.sender.toString()).emit('chat-message', emittedMessage);
+                // Private message: send via Socket.IO service
+                try {
+                    await socketService.sendPrivateMessage(
+                        newMessage.sender?.toString() || 'bot', 
+                        newMessage.recipient.toString(), 
+                        emittedMessage
+                    );
+                    console.log(`Private message sent via Socket.IO to recipient: ${newMessage.recipient.toString()}`);
+                } catch (socketError) {
+                    console.error('Error sending private message via Socket.IO service:', socketError);
+                    // Direct fallback to Socket.IO
+                    io.to(newMessage.recipient.toString()).emit('chat-message', emittedMessage);
+                    if (message.senderId !== 'bot' && newMessage.sender) {
+                        io.to(newMessage.sender.toString()).emit('chat-message', emittedMessage);
+                    }
                 }
             } else {
-                // General chat message: broadcast to general chat room
-                console.log(`Broadcasting to general chat room: ${emittedMessage.sessionId || 'general-chat'}`);
-                io.to(emittedMessage.sessionId || 'general-chat').emit('chat-message', emittedMessage);
+                // General or session chat message: send via Socket.IO service
+                try {
+                    if (normalizedSessionId === null) {
+                        // General chat: broadcast to all
+                        io.to('general-chat').emit('chat-message', emittedMessage);
+                        console.log(`General chat message sent via Socket.IO`);
+                    } else {
+                        // Session-specific chat: send via Socket.IO service
+                        await socketService.sendSessionMessage(normalizedSessionId, emittedMessage);
+                        console.log(`Session chat message sent via Socket.IO to session: ${normalizedSessionId}`);
+                    }
+                } catch (socketError) {
+                    console.error('Error sending chat message via Socket.IO service:', socketError);
+                    // Direct fallback to Socket.IO
+                    io.to(emittedMessage.sessionId || 'general-chat').emit('chat-message', emittedMessage);
+                }
             }
         } catch (error) {
-            console.error('Error saving chat message:', error);
+            console.error('Error saving or sending chat message:', error);
             console.error('Message data:', message);
             console.error('Error details:', error.message);
         }
     });
 
-    // WebRTC signaling events
-    socket.on('join-call', (roomId) => {
-        socket.join(roomId);
-        console.log(`Socket ${socket.id} joined call room ${roomId}`);
-        socket.emit('joined-call', roomId);
+    // Mediasoup WebRTC signaling events
+    socket.on('join-call', async (roomId) => {
+        try {
+            // In a real implementation, you'd need to authenticate the user
+            // For now, we'll use a placeholder - in production, get user from socket handshake
+            const userId = socket.handshake.query.userId || 'default-user';
+            
+            // Join mediasoup room
+            const { room, peer } = await mediasoupService.joinRoom(roomId, userId, socket.id);
+            
+            socket.join(roomId);
+            console.log(`Socket ${socket.id} joined mediasoup call room ${roomId} as user ${userId}`);
+            
+            // Notify client of successful join with room info
+            socket.emit('joined-call', {
+                roomId,
+                peerCount: room.peers.size,
+                success: true
+            });
+            
+            // Notify other peers in the room about the new participant
+            socket.to(roomId).emit('new-peer', {
+                peerId: userId,
+                socketId: socket.id
+            });
+            
+        } catch (error) {
+            console.error('Error joining mediasoup call:', error);
+            socket.emit('call-error', { error: 'Failed to join call' });
+        }
     });
 
-    socket.on('leave-call', (roomId) => {
-        socket.leave(roomId);
-        console.log(`Socket ${socket.id} left call room ${roomId}`);
+    socket.on('leave-call', async (roomId) => {
+        try {
+            // In a real implementation, you'd need to authenticate the user
+            const userId = socket.handshake.query.userId || 'default-user';
+            
+            // Leave mediasoup room
+            mediasoupService.leaveRoom(roomId, userId);
+            
+            socket.leave(roomId);
+            console.log(`Socket ${socket.id} left mediasoup call room ${roomId}`);
+            
+            // Notify other peers about the departure
+            socket.to(roomId).emit('peer-left', {
+                peerId: userId
+            });
+            
+        } catch (error) {
+            console.error('Error leaving mediasoup call:', error);
+        }
     });
 
-    socket.on('offer', (offer, roomId) => {
-        console.log(`Received offer from ${socket.id} in room ${roomId}`);
-        socket.to(roomId).emit('offer', offer);
+    socket.on('create-transport', async (data, callback) => {
+        try {
+            const { roomId } = data;
+            // In a real implementation, you'd need to authenticate the user
+            const userId = socket.handshake.query.userId || 'default-user';
+            
+            const transportOptions = await mediasoupService.createWebRtcTransport(roomId, userId);
+            
+            callback(null, transportOptions);
+            
+        } catch (error) {
+            console.error('Error creating transport:', error);
+            callback(error.message, null);
+        }
     });
 
-    socket.on('answer', (answer, roomId) => {
-        console.log(`Received answer from ${socket.id} in room ${roomId}`);
-        socket.to(roomId).emit('answer', answer);
+    socket.on('connect-transport', async (data, callback) => {
+        try {
+            const { transportId, dtlsParameters } = data;
+            
+            await mediasoupService.connectTransport(transportId, dtlsParameters);
+            
+            callback(null, { success: true });
+            
+        } catch (error) {
+            console.error('Error connecting transport:', error);
+            callback(error.message, null);
+        }
     });
 
-    socket.on('ice-candidate', (candidate, roomId) => {
-        console.log(`Received ICE candidate from ${socket.id} in room ${roomId}`);
-        socket.to(roomId).emit('ice-candidate', candidate);
+    socket.on('produce', async (data, callback) => {
+        try {
+            const { roomId, transportId, kind, rtpParameters, appData } = data;
+            // In a real implementation, you'd need to authenticate the user
+            const userId = socket.handshake.query.userId || 'default-user';
+            
+            const { id: producerId } = await mediasoupService.produce(
+                roomId, 
+                userId, 
+                transportId, 
+                kind, 
+                rtpParameters, 
+                appData
+            );
+            
+            // Notify other peers about the new producer
+            socket.to(roomId).emit('new-producer', {
+                peerId: userId,
+                producerId,
+                kind
+            });
+            
+            callback(null, { producerId });
+            
+        } catch (error) {
+            console.error('Error producing media:', error);
+            callback(error.message, null);
+        }
     });
 
-    socket.on('get-peers', (roomId) => {
-        const peers = io.sockets.adapter.rooms[roomId];
-        if (peers) {
-            const peerIds = Object.keys(peers.sockets);
-            socket.emit('peers', peerIds);
+    socket.on('consume', async (data, callback) => {
+        try {
+            const { roomId, transportId, producerId, rtpCapabilities } = data;
+            // In a real implementation, you'd need to authenticate the user
+            const userId = socket.handshake.query.userId || 'default-user';
+            
+            const consumerOptions = await mediasoupService.consume(
+                roomId,
+                userId,
+                transportId,
+                producerId,
+                rtpCapabilities
+            );
+            
+            callback(null, consumerOptions);
+            
+        } catch (error) {
+            console.error('Error consuming media:', error);
+            callback(error.message, null);
+        }
+    });
+
+    socket.on('resume-consumer', async (data, callback) => {
+        try {
+            const { consumerId } = data;
+            
+            await mediasoupService.resumeConsumer(consumerId);
+            
+            callback(null, { success: true });
+            
+        } catch (error) {
+            console.error('Error resuming consumer:', error);
+            callback(error.message, null);
+        }
+    });
+
+    socket.on('pause-consumer', async (data, callback) => {
+        try {
+            const { consumerId } = data;
+            
+            await mediasoupService.pauseConsumer(consumerId);
+            
+            callback(null, { success: true });
+            
+        } catch (error) {
+            console.error('Error pausing consumer:', error);
+            callback(error.message, null);
         }
     });
 

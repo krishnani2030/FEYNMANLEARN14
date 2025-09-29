@@ -408,63 +408,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         console.log('Connected users:', users);
     });
 
-    socket.on('chat-message', (message) => {
-        console.log('🔔 Received chat message:', message);
-        console.log('Current chat recipient:', currentChatRecipient);
-        console.log('Current user ID:', currentUser?.id);
-        
-        // Validate message
-        if (!message || !message.text || !message.senderName) {
-            console.error('Invalid message received:', message);
-            return;
-        }
-        
-        // Handle bot messages specially
-        if (message.isBot || message.senderId === 'bot' || message.senderName === 'Feynman Bot') {
-            console.log('Received bot message:', message);
-            
-            // Add Feynman Bot to chat list if not already there
-            addFeynmanBotToChat();
-            
-            // If currently viewing bot chat, display the message
-            if (currentChatRecipient && currentChatRecipient._id === 'feynman-bot') {
-                displayChatMessage(message);
-            }
-            
-            // Update bot chat preview
-            updateBotChatPreview(message.text);
-            
-            // Show notification for bot messages
-            showAlert('New message from Feynman Bot', 'info');
-        } else if (message.sessionId && message.sessionId !== 'general-chat') {
-            // Handle session discussion messages
-            console.log('Received session discussion message:', message);
-            
-            // If currently viewing this session's discussion, display the message
-            if (currentDiscussionSessionId === message.sessionId) {
-                displayDiscussionMessage(message);
-            }
-        } else {
-            console.log('Processing regular message for display');
-            
-            // TEMPORARY: Show alert for any received message to debug
-            showAlert(`📨 Received: "${message.text}" from ${message.senderName}`, 'info');
-            
-            displayChatMessage(message);
-            
-            // Update chat list if this is for current chat
-            if (currentChatRecipient && (message.senderId === currentChatRecipient._id || message.recipientId === currentChatRecipient._id)) {
-                const chatListItem = document.querySelector(`[data-user-id="${currentChatRecipient._id}"]`);
-                if (chatListItem) {
-                    const preview = chatListItem.querySelector('.chat-list-item-preview');
-                    if (preview) {
-                        const previewText = message.text.length > 40 ? message.text.substring(0, 40) + '...' : message.text;
-                        preview.textContent = previewText;
-                    }
-                }
-            }
-        }
-    });
+    // Socket.IO chat message subscription setup - will be handled when selecting a chat
+    // Messages will be received through Socket.IO chat service
+    console.log('Socket.IO chat-message listener setup - using Socket.IO for messaging');
 
     // WebRTC signaling listeners
     socket.on('joined-call', (roomId) => {
@@ -537,14 +483,21 @@ document.addEventListener('DOMContentLoaded', async function() {
     const sendChatButton = document.getElementById('send-chat-button');
 
     if (sendChatButton) {
+        console.log('✅ Setting up send button event listener');
         sendChatButton.addEventListener('click', () => {
+            console.log('🖱️ Send button clicked');
             sendChatMessage();
         });
+        sendChatButton.setAttribute('data-listeners-attached', 'true');
+    } else {
+        console.log('❌ Send chat button not found');
     }
 
     if (chatMessageInput) {
+        console.log('✅ Setting up chat input event listeners');
         chatMessageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
+                console.log('⌨️ Enter key pressed in chat input');
                 e.preventDefault(); // Prevent form submission
                 handleTypingStop(); // Stop typing indicator before sending
                 sendChatMessage();
@@ -571,6 +524,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         chatMessageInput.addEventListener('blur', () => {
             handleTypingStop();
         });
+        chatMessageInput.setAttribute('data-listeners-attached', 'true');
+    } else {
+        console.log('❌ Chat message input not found');
     }
 
     // Check if user is already logged in
@@ -591,7 +547,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (currentUser) {
         showDashboard();
         // Initialize new systems after login
+        console.log('🔧 Initializing systems after login...');
         await initializeNewSystems();
+        console.log('🔧 Systems initialization completed');
     } else {
         showLandingPage();
     }
@@ -685,29 +643,59 @@ let selectedChatRecipient = null;
 let currentView = 'landing';
 
 // New system instances
-let ablyChat = null;
+let socketChat = null;
 let mediasoupClient = null;
-let isAblyInitialized = false;
+let isSocketChatInitialized = false;
 
-// Initialize new systems (Ably + Mediasoup)
+// Initialize new systems (Socket.IO + Mediasoup)
 async function initializeNewSystems() {
-    if (!currentUser || isAblyInitialized) return;
+    console.log('🔧 Initializing new systems...');
+    console.log('Current user:', currentUser);
+    console.log('isSocketChatInitialized:', isSocketChatInitialized);
+    console.log('window.socketChat available:', !!window.socketChat);
+    
+    if (!currentUser) {
+        console.log('❌ Skipping initialization - no current user');
+        return;
+    }
+    
+    if (isSocketChatInitialized) {
+        console.log('❌ Skipping initialization - already initialized');
+        return;
+    }
     
     try {
-        // Initialize Ably Chat
-        if (window.ablyChat) {
-            ablyChat = window.ablyChat;
-            const success = await ablyChat.init(currentUser);
+        // Initialize Socket.IO Chat
+        console.log('🔌 Checking for window.socketChat:', !!window.socketChat);
+        console.log('🔌 Available on window:', Object.keys(window).filter(key => key.includes('socket') || key.includes('Socket')));
+        if (window.socketChat) {
+            socketChat = window.socketChat;
+            console.log('🔌 Attempting to initialize Socket.IO chat...');
+            const success = await socketChat.init(currentUser);
+            console.log('🔌 Socket.IO chat init result:', success);
             if (success) {
-                console.log('✅ Ably chat system initialized');
+                console.log('✅ Socket.IO chat system initialized');
                 
-                // Subscribe to notifications
-                await ablyChat.subscribeToNotifications((notification) => {
-                    handleAblyNotification(notification);
+                // Set up callback to retry pending messages when connection is established
+                socketChat.setConnectionEstablishedCallback(() => {
+                    console.log('🔄 Socket.IO connection established, ready for messaging');
+                    if (socketChat.pendingMessages.length > 0) {
+                        showAlert(`Retrying ${socketChat.pendingMessages.length} pending message(s)...`, 'info');
+                    }
                 });
                 
-                isAblyInitialized = true;
+                // Subscribe to notifications
+                await socketChat.subscribeToNotifications((notification) => {
+                    handleSocketNotification(notification);
+                });
+                
+                isSocketChatInitialized = true;
+                console.log('✅ Socket.IO chat fully initialized');
+            } else {
+                console.log('❌ Socket.IO chat initialization failed');
             }
+        } else {
+            console.log('❌ window.socketChat not available');
         }
         
         // Initialize Mediasoup Client
@@ -728,8 +716,8 @@ async function initializeNewSystems() {
     }
 }
 
-// Handle Ably notifications
-function handleAblyNotification(notification) {
+// Handle Socket.IO notifications
+function handleSocketNotification(notification) {
     console.log('📬 Received notification:', notification);
     
     // Show notification popup if it's important
@@ -874,9 +862,18 @@ function showDashboard() {
     currentView = 'dashboard';
     updateDashboard();
     showSessionsTab('browse-sessions');
-    // Ensure user joins their private room for receiving DMs
-    if (window.appSocket && currentUser?.id) {
-        window.appSocket.emit('join-user', currentUser.id);
+
+    // Initialize Socket.IO and other systems when user navigates to dashboard
+    if (currentUser?.id) {
+        // Ensure user joins their private room for receiving DMs
+        if (window.appSocket) {
+            window.appSocket.emit('join-user', currentUser.id);
+        }
+
+        // Initialize Socket.IO chat and other real-time systems
+        initializeNewSystems().catch(error => {
+            console.error('Failed to initialize real-time systems:', error);
+        });
     }
 }
 
@@ -2145,7 +2142,7 @@ async function startChatWithUser(userId) {
     }
 }
 
-async function selectChat(userId, userName, userUsername) {
+async function selectChat(userId, userName) {
     try {
         console.log('Selecting chat with user:', userName, 'ID:', userId);
         
@@ -2176,6 +2173,92 @@ async function selectChat(userId, userName, userUsername) {
         // Load chat history
         await loadChatHistory(userId);
         
+        // Subscribe to Socket.IO chat if available
+        if (socketChat && isSocketChatInitialized) {
+            try {
+                await socketChat.subscribeToPrivateChat(userId, (message) => {
+                    console.log('🔔 Received Socket.IO message:', message);
+                    console.log('Current chat recipient:', currentChatRecipient);
+                    console.log('Current user ID:', currentUser?.id);
+                    
+                    // Handle bot messages specially
+                    if (message.isBot || message.senderId === 'bot' || message.senderName === 'Feynman Bot') {
+                        console.log('Received bot message:', message);
+                        
+                        // Add Feynman Bot to chat list if not already there
+                        addFeynmanBotToChat();
+                        
+                        // If currently viewing bot chat, display the message
+                        if (currentChatRecipient && currentChatRecipient._id === 'feynman-bot') {
+                            displayChatMessage(message);
+                        }
+                        
+                        // Update bot chat preview
+                        updateBotChatPreview(message.text);
+                        
+                        // Show notification for bot messages
+                        showAlert('New message from Feynman Bot', 'info');
+                    } else if (message.sessionId && message.sessionId !== 'general-chat') {
+                        // Handle session discussion messages
+                        console.log('Received session discussion message:', message);
+                        
+                        // If currently viewing this session's discussion, display the message
+                        if (currentDiscussionSessionId === message.sessionId) {
+                            displayDiscussionMessage(message);
+                        }
+                    } else {
+                        console.log('Processing regular Socket.IO message for display');
+                        
+                        // TEMPORARY: Show alert for any received message to debug
+                        showAlert(`📨 Received: "${message.text}" from ${message.senderName}`, 'info');
+                        
+                        displayChatMessage(message);
+                        
+                        // Update chat list if this is for current chat
+                        if (currentChatRecipient && (message.senderId === currentChatRecipient._id || message.recipientId === currentChatRecipient._id)) {
+                            const chatListItem = document.querySelector(`[data-user-id="${currentChatRecipient._id}"]`);
+                            if (chatListItem) {
+                                const preview = chatListItem.querySelector('.chat-list-item-preview');
+                                if (preview) {
+                                    const previewText = message.text.length > 40 ? message.text.substring(0, 40) + '...' : message.text;
+                                    preview.textContent = previewText;
+                                }
+                            }
+                        }
+                    }
+                }, (presence) => {
+                    // Handle presence updates (online status, typing indicators)
+                    console.log('Presence update:', presence);
+                    if (presence.userId === userId) {
+                        switch(presence.type) {
+                            case 'online':
+                                updateOnlineStatus(userId, true);
+                                break;
+                            case 'offline':
+                                updateOnlineStatus(userId, false);
+                                break;
+                            case 'update':
+                                if (presence.data.typing) {
+                                    updateOnlineStatus(userId, true, true);
+                                    if (currentChatRecipient && currentChatRecipient._id === userId) {
+                                        showTypingIndicator(currentChatRecipient.name);
+                                    }
+                                } else {
+                                    updateOnlineStatus(userId, true, false);
+                                    hideTypingIndicator();
+                                }
+                                break;
+                        }
+                    }
+                });
+                
+                console.log(`✅ Subscribed to Socket.IO chat with user ${userId}`);
+            } catch (socketError) {
+                console.error('Failed to subscribe to Socket.IO chat:', socketError);
+                showAlert('Failed to connect to chat service', 'error');
+            }
+        }
+        
         // Focus on message input
         const messageInput = document.getElementById('chat-message-input');
         if (messageInput) {
@@ -2203,6 +2286,8 @@ async function loadChatHistory(recipientId) {
         chatMessagesContainer.innerHTML = '';
         
         messages.forEach(message => {
+            console.log('📜 Raw message from history:', message);
+            
             // Transform message format for display
             const displayMessage = {
                 _id: message._id,
@@ -2213,8 +2298,11 @@ async function loadChatHistory(recipientId) {
                 timestamp: message.timestamp,
                 recipientId: message.recipient ? message.recipient.toString() : message.recipientId,
                 recipientUsername: message.recipientUsername,
-                isBot: message.senderName === 'Feynman Bot' || message.senderId === 'bot'
+                isBot: message.senderName === 'Feynman Bot' || message.senderId === 'bot',
+                source: 'chat_history'
             };
+            
+            console.log('📜 Transformed message for display:', displayMessage);
             displayChatMessage(displayMessage);
         });
         
@@ -2233,8 +2321,11 @@ function displayChatMessage(message) {
     const chatMessagesContainer = document.getElementById('chat-messages');
     if (!chatMessagesContainer) {
         console.log('❌ No chat messages container found');
+        console.error('CRITICAL: chat-messages container not found in DOM!');
         return;
     }
+    
+    console.log('✅ Found chat messages container:', chatMessagesContainer);
     
     const isOwn = message.senderId === currentUser?.id || message.sender === currentUser?.id;
     const isBot = message.senderId === 'bot' || message.isBot || message.senderName === 'Feynman Bot';
@@ -2259,19 +2350,22 @@ function displayChatMessage(message) {
             // Check if this message belongs to the current chat
             const belongsToCurrentChat = 
                 (messageRecipientId === currentChatRecipient._id && messageSenderId === currentUser?.id) ||
-                (messageSenderId === currentChatRecipient._id && messageRecipientId === currentUser?.id);
+                (messageSenderId === currentChatRecipient._id && messageRecipientId === currentUser?.id) ||
+                (isOwn && messageRecipientId === currentChatRecipient._id); // Allow optimistic display for own messages
             
             console.log('Chat filtering:', {
                 messageRecipientId,
                 messageSenderId,
                 currentChatRecipientId: currentChatRecipient._id,
                 currentUserId: currentUser?.id,
+                isOwn,
                 belongsToCurrentChat
             });
             
             if (!belongsToCurrentChat) {
-                console.log('❌ Message does not belong to current chat, skipping');
-                return;
+                console.log('❌ Message does not belong to current chat, but showing anyway for debugging');
+                // Temporarily allow all messages for debugging
+                // return;
             }
             console.log('✅ Message belongs to current chat, displaying');
         } else {
@@ -2279,7 +2373,13 @@ function displayChatMessage(message) {
             return; // Don't show bot messages in regular chats
         }
     } else {
-        console.log('⚠️ No current chat recipient, displaying anyway');
+        console.log('⚠️ No current chat recipient');
+        // If no current chat recipient, only show if this is an optimistic message being sent
+        if (!isOwn) {
+            console.log('❌ No chat recipient and not own message, skipping');
+            return;
+        }
+        console.log('✅ Own message without chat recipient, displaying anyway');
     }
     
     const messageElement = document.createElement('div');
@@ -2321,16 +2421,49 @@ function displayChatMessage(message) {
 }
 
 async function sendChatMessage() {
+    console.log('sendChatMessage called');
     const input = document.getElementById('chat-message-input');
-    const messageText = input.value.trim();
     
-    if (!messageText || !currentChatRecipient) {
-        console.log('Cannot send message - missing text or recipient');
-        console.log('Current chat recipient:', currentChatRecipient);
+    if (!input) {
+        console.error('❌ CRITICAL: chat-message-input element not found!');
+        console.log('Available inputs:', document.querySelectorAll('input'));
+        showAlert('Chat input not found. Please refresh the page.', 'error');
         return;
     }
     
+    const messageText = input.value ? input.value.trim() : '';
+    
+    if (!messageText) {
+        console.log('Cannot send message - no text');
+        return;
+    }
+    
+    if (!currentChatRecipient) {
+        console.log('Cannot send message - no recipient selected');
+        console.log('Available chat recipients in DOM:', document.querySelectorAll('.chat-list-item'));
+        
+        // Try to auto-select the first available chat recipient if none selected
+        const firstChatItem = document.querySelector('.chat-list-item');
+        if (firstChatItem) {
+            const userId = firstChatItem.getAttribute('data-user-id');
+            const userName = firstChatItem.querySelector('.chat-name')?.textContent;
+            if (userId && userName) {
+                console.log('Auto-selecting first chat recipient:', userName);
+                currentChatRecipient = { _id: userId, name: userName };
+                // Don't return, continue with sending the message
+            } else {
+                showAlert('Please select a chat recipient first', 'warning');
+                return;
+            }
+        } else {
+            showAlert('No chat recipients available. Please start a conversation first.', 'warning');
+            return;
+        }
+    }
+    
     console.log('Sending chat message to:', currentChatRecipient.name);
+    console.log('Current user:', currentUser);
+    console.log('Current chat recipient:', currentChatRecipient);
     
     try {
         // Create message object
@@ -2339,51 +2472,197 @@ async function sendChatMessage() {
             senderName: currentUser.name,
             senderUsername: currentUser.username,
             text: messageText,
-            recipientId: currentChatRecipient._id,
-            recipientUsername: currentChatRecipient.username,
+            recipientId: currentChatRecipient._id,  // Using _id instead of id
+            recipientUsername: currentChatRecipient.username || currentChatRecipient.name, // Fallback to name if username not available
             timestamp: new Date().toISOString(),
-            localId: Date.now()
+            localId: Date.now(),
+            status: 'sending' // Track message status
         };
         
         // Optimistically display the message immediately (like WhatsApp)
+        console.log('About to display message optimistically:', message);
+        console.log('🎯 Message text being sent:', message.text);
+        console.log('🎯 Message encrypted flag:', message.encrypted);
+        
+        // Add source tag for tracking
+        message.source = 'optimistic_display';
+        
+        console.log('🎯 Calling displayChatMessage...');
         displayChatMessage(message);
+        console.log('🎯 displayChatMessage call completed');
         
         // Clear input immediately for better UX
         input.value = '';
         
-        // Send via socket to save in database
-        if (window.appSocket && window.appSocket.connected) {
-            console.log('Sending message via Socket.IO:', message);
-            console.log('Socket ID:', window.appSocket.id);
-            console.log('Socket connected:', window.appSocket.connected);
-            
-            // Ensure we're in the user room
-            window.appSocket.emit('join-user', currentUser.id);
-            
-            // Send the message
-            window.appSocket.emit('chat-message', message);
-            console.log('✅ Message sent via Socket.IO');
+        // Send via Socket.IO
+        if (socketChat && isSocketChatInitialized) {
+            try {
+                console.log('Sending message via Socket.IO to recipient ID:', currentChatRecipient._id);
+                
+                // Update UI to show sending status
+                const messageElement = document.querySelector(`[data-message-id="${message.localId}"]`);
+                if (messageElement) {
+                    const statusElement = messageElement.querySelector('.message-status');
+                    if (statusElement) {
+                        // Use requestAnimationFrame to ensure the DOM is updated before changing status
+                        requestAnimationFrame(() => {
+                            statusElement.textContent = 'Sending...';
+                            statusElement.setAttribute('data-status', 'sending');
+                            statusElement.style.opacity = '1';
+                            
+                            // Add a small delay to ensure the status is visible
+                            setTimeout(() => {
+                                statusElement.style.transition = 'opacity 0.3s ease';
+                            }, 50);
+                        });
+                    }
+                }
+                
+                const result = await socketChat.sendPrivateMessage(
+                    currentChatRecipient._id, 
+                    messageText, 
+                    'text'
+                );
+                
+                console.log('Message sent via Socket.IO successfully:', result);
+                
+                // Update message status based on server response
+                if (messageElement) {
+                    const statusElement = messageElement.querySelector('.message-status');
+                    if (statusElement) {
+                        if (result && result.success) {
+                            // Update to delivered state
+                            statusElement.textContent = 'Delivered';
+                            statusElement.setAttribute('data-status', 'delivered');
+                            
+                            // If we have a message ID from the server, update the DOM element
+                            if (result.messageId) {
+                                messageElement.setAttribute('data-message-id', result.messageId);
+                                if (statusElement) {
+                                    statusElement.setAttribute('data-message-id', result.messageId);
+                                }
+                            }
+                            
+                            // Mark as read after a short delay if the user is still on the chat
+                            setTimeout(() => {
+                                if (document.visibilityState === 'visible' && 
+                                    document.hasFocus() && 
+                                    document.getElementById('chat-page')?.classList.contains('active')) {
+                                    statusElement.textContent = 'Read';
+                                    statusElement.setAttribute('data-status', 'read');
+                                }
+                            }, 1000);
+                        } else {
+                            // Handle error state
+                            statusElement.textContent = 'Failed';
+                            statusElement.setAttribute('data-status', 'error');
+                            showAlert('Message sent but not confirmed by server', 'warning');
+                            
+                            // Add retry button
+                            const retryButton = document.createElement('button');
+                            retryButton.className = 'retry-button';
+                            retryButton.innerHTML = 'Retry';
+                            retryButton.onclick = () => {
+                                // Clear error state
+                                statusElement.textContent = 'Sending...';
+                                statusElement.setAttribute('data-status', 'sending');
+                                
+                                // Remove any existing retry buttons
+                                const existingRetryButtons = messageElement.querySelectorAll('.retry-button');
+                                existingRetryButtons.forEach(btn => btn.remove());
+                                
+                                // Resend the message
+                                sendChatMessage();
+                            };
+                            
+                            statusElement.appendChild(retryButton);
+                        }
+                    }
+                }
+                
+            } catch (socketError) {
+                console.error('Error sending message via Socket.IO, falling back to API:', socketError);
+                
+                // Update UI to show error status
+                const messageElement = document.querySelector(`[data-message-id="${message.localId}"]`);
+                if (messageElement) {
+                    const statusElement = messageElement.querySelector('.message-status');
+                    if (statusElement) {
+                        statusElement.textContent = 'Failed';
+                        statusElement.setAttribute('data-status', 'error');
+                    }
+                }
+                
+                // Fallback: save to server via REST API
+                try {
+                    const result = await apiRequest('/chat/send', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            recipientId: currentChatRecipient._id,
+                            text: messageText,
+                            messageType: 'text'
+                        })
+                    });
+                    if (result.success) {
+                        console.log('Message saved via API fallback');
+                    }
+                } catch (apiError) {
+                    console.error('Failed to send message via API:', apiError);
+                    showAlert('Failed to send message', 'error');
+                }
+            }
         } else {
-            console.error('Socket not connected, cannot send message');
-            console.error('Socket state:', {
-                exists: !!window.appSocket,
-                connected: window.appSocket?.connected,
-                id: window.appSocket?.id
-            });
-            showAlert('Connection error. Please try again.', 'error');
-            // Re-add the message to input if sending failed
+            console.error('Socket.IO chat not initialized, attempting to re-initialize...');
+
+            // Store the message data for retry
+            const messageToRetry = {
+                text: messageText,
+                recipientId: currentChatRecipient._id,
+                timestamp: message.timestamp
+            };
+
+            // Try to re-initialize Socket.IO first
+            try {
+                await initializeNewSystems();
+                if (isSocketChatInitialized) {
+                    console.log('✅ Socket.IO re-initialized, retrying message send...');
+
+                    // Retry the message send
+                    const result = await socketChat.sendPrivateMessage(
+                        currentChatRecipient._id,
+                        messageText,
+                        'text'
+                    );
+
+                    console.log('Message sent via Socket.IO after re-initialization:', result);
+
+                    // Update message status to delivered
+                    const messageElement = document.querySelector(`[data-message-id="${message.localId}"]`);
+                    if (messageElement) {
+                        const statusElement = messageElement.querySelector('.message-status');
+                        if (statusElement) {
+                            statusElement.textContent = 'Delivered';
+                            statusElement.setAttribute('data-status', 'delivered');
+                        }
+                    }
+
+                    return; // Exit early, message sent successfully
+                }
+            } catch (reinitError) {
+                console.error('Failed to re-initialize Socket.IO:', reinitError);
+            }
+
+            // If re-initialization fails, show error instead of using API
+            console.error('❌ Cannot send message - Socket.IO unavailable');
+            showAlert('Chat service unavailable. Please refresh the page and try again.', 'error');
+
+            // Restore the message text to the input
             input.value = messageText;
-            return;
         }
         
-        // Focus back on input for continuous typing
-        input.focus();
-        
     } catch (error) {
-        console.error('❌ Failed to send message:', error);
-        showAlert('Failed to send message. Please try again.', 'error');
-        // Re-add the message to input if sending failed
-        input.value = messageText;
+        console.error('Error sending chat message:', error);
+        showAlert('Failed to send message', 'error');
     }
 }
 
@@ -2391,6 +2670,130 @@ async function sendChatMessage() {
 function sendMessage() {
     sendChatMessage();
 }
+
+// Debug function to test chat display
+function testChatDisplay() {
+    console.log('Testing chat display...');
+    console.log('Current user:', currentUser);
+    console.log('Current chat recipient:', currentChatRecipient);
+    
+    if (!currentUser) {
+        console.log('❌ No current user - please log in first');
+        return;
+    }
+    
+    const testMessage = {
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        text: 'Test message from console',
+        recipientId: currentChatRecipient?._id || 'test-recipient',
+        timestamp: new Date().toISOString(),
+        localId: Date.now()
+    };
+    
+    console.log('Displaying test message:', testMessage);
+    displayChatMessage(testMessage);
+}
+
+// Make test function available globally
+window.testChatDisplay = testChatDisplay;
+
+// Simple test function that bypasses all filtering
+function forceDisplayMessage(text = 'Test message') {
+    console.log('🔧 Force displaying message:', text);
+    
+    const chatMessagesContainer = document.getElementById('chat-messages');
+    if (!chatMessagesContainer) {
+        console.error('❌ No chat-messages container found!');
+        return false;
+    }
+    
+    const messageElement = document.createElement('div');
+    messageElement.classList.add('chat-message', 'chat-message--own');
+    messageElement.innerHTML = `<div class="message-content">${text}</div>`;
+    
+    chatMessagesContainer.appendChild(messageElement);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+    
+    console.log('✅ Message force-displayed successfully');
+    return true;
+}
+
+// Make force display function available globally
+window.forceDisplayMessage = forceDisplayMessage;
+
+// Comprehensive debug function
+function debugChatState() {
+    console.log('🔍 === CHAT DEBUG REPORT ===');
+    console.log('Current user:', currentUser);
+    console.log('Current chat recipient:', currentChatRecipient);
+    console.log('Socket chat initialized:', isSocketChatInitialized);
+    console.log('Socket chat object:', socketChat);
+    
+    // Check DOM elements
+    const input = document.getElementById('chat-message-input');
+    const button = document.getElementById('send-chat-button');
+    const container = document.getElementById('chat-messages');
+    
+    console.log('Chat input element:', input);
+    console.log('Send button element:', button);
+    console.log('Chat messages container:', container);
+    
+    // Check event listeners
+    console.log('Input has listeners:', input?.getAttribute('data-listeners-attached'));
+    console.log('Button has listeners:', button?.getAttribute('data-listeners-attached'));
+    
+    // Check if chat interface is visible
+    const chatInterface = document.querySelector('.chat-interface');
+    console.log('Chat interface visible:', chatInterface?.style.display !== 'none');
+    
+    // Test input value
+    if (input) {
+        console.log('Current input value:', `"${input.value}"`);
+    }
+    
+    console.log('🔍 === END DEBUG REPORT ===');
+}
+
+// Make debug function available globally
+window.debugChatState = debugChatState;
+
+// Manual Socket.IO chat initialization for debugging
+async function forceInitSocketChat() {
+    console.log('🔧 Force initializing Socket.IO chat...');
+    console.log('Current user:', currentUser);
+    console.log('window.socketChat available:', !!window.socketChat);
+    
+    if (!currentUser) {
+        console.log('❌ No current user');
+        return false;
+    }
+    
+    if (!window.socketChat) {
+        console.log('❌ window.socketChat not available');
+        return false;
+    }
+    
+    try {
+        socketChat = window.socketChat;
+        const success = await socketChat.init(currentUser);
+        console.log('Socket.IO init result:', success);
+        
+        if (success) {
+            isSocketChatInitialized = true;
+            console.log('✅ Socket.IO chat force-initialized successfully');
+            return true;
+        } else {
+            console.log('❌ Socket.IO chat initialization failed');
+            return false;
+        }
+    } catch (error) {
+        console.error('❌ Error force-initializing Socket.IO chat:', error);
+        return false;
+    }
+}
+
+window.forceInitSocketChat = forceInitSocketChat;
 
 async function fetchAndDisplayExistingChats() {
     const existingChatsListContainer = document.getElementById('existing-chats-list');
@@ -2595,77 +2998,122 @@ function displayChatMessage(message, isPrivateHint = undefined) {
     // Determine if this is a private message
     const isPrivateMsg = typeof isPrivateHint === 'boolean' ? isPrivateHint : Boolean(recipientId);
 
-    // Determine current chat context
-    const isGeneralChatActive = !selectedChatRecipient;
-    const isPrivateChatActive = Boolean(selectedChatRecipient && selectedChatRecipient._id);
+    // Determine current chat context - use currentChatRecipient instead of selectedChatRecipient
+    const isGeneralChatActive = !currentChatRecipient;
+    const isPrivateChatActive = Boolean(currentChatRecipient && currentChatRecipient._id);
 
     let shouldDisplay = false;
     if (isPrivateMsg) {
         // Show only if this private message is between me and the selected recipient
         if (isPrivateChatActive) {
-            const otherId = selectedChatRecipient._id?.toString();
+            const otherId = currentChatRecipient._id?.toString();
             const me = currentUser?.id?.toString();
             const betweenUs = (
                 (senderId?.toString() === me && recipientId?.toString() === otherId) ||
                 (senderId?.toString() === otherId && recipientId?.toString() === me)
             );
             shouldDisplay = betweenUs;
+            console.log('🔍 Private message filtering:', { senderId, recipientId, otherId, me, betweenUs, shouldDisplay });
         }
     } else {
         // General chat: show only in general chat context
         shouldDisplay = isGeneralChatActive && (sessionId === 'general-chat' || sessionId === null || typeof sessionId === 'undefined');
+        console.log('🔍 General message filtering:', { isGeneralChatActive, sessionId, shouldDisplay });
     }
 
-    if (!shouldDisplay) return;
+    console.log('🔍 Final shouldDisplay decision:', shouldDisplay);
+    if (!shouldDisplay) {
+        console.log('❌ Message filtered out, not displaying');
+        return;
+    }
 
+    console.log('🔧 Creating message element...');
     const messageElement = document.createElement('div');
     messageElement.classList.add('chat-message');
     if (senderId && senderId.toString() === currentUser?.id?.toString()) {
         messageElement.classList.add('chat-message--own');
-    }
-    messageElement.innerHTML = `<strong>${message.senderName}:</strong> ${message.text}`;
-    chatMessagesContainer.appendChild(messageElement);
-    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight; // Auto-scroll to bottom
-}
-
-function sendChatMessage(messageText) {
-    if (messageText.trim() === '') return;
-    if (!currentUser) {
-        showAlert('Please log in to send messages.', 'error');
-        return;
-    }
-
-    const message = {
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        senderUsername: currentUser.username,
-        text: messageText,
-        timestamp: new Date().toISOString(),
-    };
-
-    if (selectedChatRecipient) {
-        message.recipientId = selectedChatRecipient._id;
-        message.recipientUsername = selectedChatRecipient.username;
-        // Use global socket reference
-        window.appSocket?.emit('chat-message', message);
-        // Refresh private chat history shortly after sending to reflect DB save
-        setTimeout(() => {
-            loadPrivateChatHistory(selectedChatRecipient._id);
-        }, 150);
+        console.log('🔧 Added own message class');
     } else {
-        // Send to general chat
-        const outgoing = { ...message, sessionId: 'general-chat' };
-        window.appSocket?.emit('chat-message', outgoing);
-        // Refresh general chat history shortly after sending
-        setTimeout(() => {
-            loadGeneralChatHistory('general-chat');
-        }, 150);
+        console.log('🔧 Added other message class');
     }
-
-    // Clear the input box after sending; message will appear when server echoes it back
-    const chatMessageInput = document.getElementById('chat-message-input');
-    if (chatMessageInput) chatMessageInput.value = '';
+    console.log('🔍 Full message object:', message);
+    console.log('🔍 Message text:', message.text);
+    console.log('🔍 Message encrypted flag:', message.encrypted);
+    console.log('🔍 Message source (where it came from):', message.source || 'unknown');
+    
+    // Check if message looks encrypted (contains colons and hex-like strings)
+    const looksEncrypted = typeof message.text === 'string' && 
+                          message.text.includes(':') && 
+                          message.text.length > 32 && 
+                          /^[a-f0-9:]+$/.test(message.text);
+    
+    console.log('🔍 Encryption check:', {
+        hasColon: message.text?.includes(':'),
+        isLongEnough: message.text?.length > 32,
+        isHexPattern: /^[a-f0-9:]+$/.test(message.text || ''),
+        looksEncrypted,
+        actualText: message.text
+    });
+    
+    if (looksEncrypted) {
+        console.log('⚠️ Message appears to be encrypted but not decrypted:', message.text);
+        // For old encrypted messages, show a user-friendly message
+        const isFromHistory = message.source === 'chat_history';
+        const displayText = isFromHistory ? 
+            '[Old encrypted message - please send new messages]' : 
+            '[Encrypted message - decryption failed]';
+        messageElement.innerHTML = `<strong>${message.senderName}:</strong> <em style="color: #666;">${displayText}</em>`;
+    } else {
+        messageElement.innerHTML = `<strong>${message.senderName}:</strong> ${message.text}`;
+    }
+    
+    console.log('🔧 Adding message to container...');
+    // Add message ID for status updates
+    const messageId = message.messageId || message._id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    messageElement.setAttribute('data-message-id', messageId);
+    
+    // Add status indicator for user's own messages
+    if (senderId && senderId.toString() === currentUser?.id?.toString()) {
+        const statusElement = document.createElement('div');
+        statusElement.className = 'message-status';
+        
+        // Set initial status (default to 'sent' if not specified)
+        const status = message.status || 'sent';
+        statusElement.setAttribute('data-status', status);
+        
+        // Add status text based on status
+        let statusText = 'Sending';
+        if (status === 'delivered') statusText = 'Delivered';
+        if (status === 'read') statusText = 'Read';
+        if (status === 'error') statusText = 'Failed';
+        
+        statusElement.textContent = statusText;
+        messageElement.appendChild(statusElement);
+        
+        // Add message ID to the status element for easy updates
+        statusElement.setAttribute('data-message-id', messageId);
+        
+        // If this is a new message being sent, add a small delay before showing 'sending' to prevent flicker
+        if (status === 'sending' || status === 'sent') {
+            statusElement.style.opacity = '0';
+            setTimeout(() => {
+                statusElement.style.transition = 'opacity 0.3s ease';
+                statusElement.style.opacity = '1';
+            }, 100);
+        }
+    }
+    
+    console.log('🔧 Message element HTML:', messageElement.outerHTML);
+    chatMessagesContainer.appendChild(messageElement);
+    console.log('🔧 Message added! Container now has', chatMessagesContainer.children.length, 'messages');
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight; // Auto-scroll to bottom
+    console.log('✅ Message display completed successfully');
+    
+    // Return the message ID for tracking
+    return messageId;
 }
+
+// Old sendChatMessage function removed - using the new async version above
 
 function updateNotesUI() {
     console.log('Updating notes UI...');
@@ -3371,6 +3819,28 @@ function openSessionDiscussion(sessionId, sessionTopic) {
         // Load discussion messages
         loadDiscussionMessages(sessionId);
         
+        // Subscribe to Socket.IO session chat if available
+        if (socketChat && isSocketChatInitialized) {
+            try {
+                socketChat.subscribeToSessionChat(sessionId, (message) => {
+                    console.log('🔔 Received Socket.IO session message:', message);
+                    
+                    // If currently viewing this session's discussion, display the message
+                    if (currentDiscussionSessionId === message.sessionId) {
+                        displayDiscussionMessage(message);
+                    }
+                }, (presence) => {
+                    // Handle presence updates for session chat
+                    console.log('Session chat presence update:', presence);
+                });
+                
+                console.log(`✅ Subscribed to Socket.IO session chat for ${sessionId}`);
+            } catch (socketError) {
+                console.error('Failed to subscribe to Socket.IO session chat:', socketError);
+                // Continue without Socket.IO subscription
+            }
+        }
+        
         // Setup event listeners
         setupDiscussionEventListeners();
     }
@@ -3469,16 +3939,36 @@ function sendDiscussionMessage() {
         senderUsername: currentUser.username,
         text: messageText,
         sessionId: currentDiscussionSessionId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        localId: Date.now()
     };
     
-    console.log('Sending discussion message:', message);
-    
-    // Send via socket to save in database
-    window.appSocket?.emit('chat-message', message);
+    // Optimistically display the message
+    displayDiscussionMessage(message);
     
     // Clear input
     messageInput.value = '';
+    
+    // Send via Socket.IO for session chat
+    if (socketChat && isSocketChatInitialized) {
+        try {
+            socketChat.sendSessionMessage(currentDiscussionSessionId, messageText, 'text');
+            console.log('Session message sent via Socket.IO successfully');
+        } catch (socketError) {
+            console.error('Error sending session message via Socket.IO, falling back to API:', socketError);
+            // Fallback: save to database via API
+            apiRequest('/chat/session/' + currentDiscussionSessionId, {
+                method: 'POST',
+                body: JSON.stringify(message)
+            });
+        }
+    } else {
+        // Save to database via API
+        apiRequest('/chat/session/' + currentDiscussionSessionId, {
+            method: 'POST',
+            body: JSON.stringify(message)
+        });
+    }
 }
 
 // Function to check connected users
@@ -3757,12 +4247,12 @@ let typingTimeout = null;
 let isCurrentlyTyping = false;
 
 function handleTypingStart() {
-    if (!currentChatRecipient || !ablyChat || !isAblyInitialized) return;
+    if (!currentChatRecipient || !socketChat || !isSocketChatInitialized) return;
     
     if (!isCurrentlyTyping) {
         isCurrentlyTyping = true;
-        const channelName = ablyChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
-        ablyChat.sendTypingIndicator(channelName, true);
+        const channelName = socketChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
+        socketChat.sendTypingIndicator(channelName, true);
     }
     
     // Clear existing timeout
@@ -3777,12 +4267,12 @@ function handleTypingStart() {
 }
 
 function handleTypingStop() {
-    if (!currentChatRecipient || !ablyChat || !isAblyInitialized) return;
+    if (!currentChatRecipient || !socketChat || !isSocketChatInitialized) return;
     
     if (isCurrentlyTyping) {
         isCurrentlyTyping = false;
-        const channelName = ablyChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
-        ablyChat.sendTypingIndicator(channelName, false);
+        const channelName = socketChat.getPrivateChannelName(currentUser.id, currentChatRecipient._id);
+        socketChat.sendTypingIndicator(channelName, false);
     }
     
     if (typingTimeout) {
@@ -3896,7 +4386,7 @@ function addMessageStatus(messageElement, status = 'sent') {
     messageElement.appendChild(statusElement);
 }
 
-// Handle presence updates from Ably
+// Handle presence updates from Socket.IO
 function handlePresenceUpdate(presence) {
     const { type, userId, data } = presence;
     

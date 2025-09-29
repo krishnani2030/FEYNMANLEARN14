@@ -1,36 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const ablyService = require('../services/ablyService');
 const { authMiddleware } = require('../middleware/auth');
 
-// Generate Ably token for authenticated user
-router.post('/token', authMiddleware, async (req, res) => {
-    try {
-        const userId = req.user._id.toString();
-        
-        // Define capabilities for the user
-        const capabilities = {
-            [`chat:private:${userId}_*`]: ['publish', 'subscribe', 'presence'],
-            [`chat:private:*_${userId}`]: ['publish', 'subscribe', 'presence'],
-            [`chat:session:*`]: ['publish', 'subscribe', 'presence'],
-            [`notifications:${userId}`]: ['subscribe'],
-            [`session:*:updates`]: ['subscribe'],
-            [`typing:*`]: ['publish', 'subscribe', 'presence']
-        };
-
-        const tokenRequest = await ablyService.generateToken(userId, capabilities);
-        
-        res.json({
-            tokenRequest,
-            clientId: userId
-        });
-    } catch (error) {
-        console.error('Error generating Ably token:', error);
-        res.status(500).json({ error: 'Failed to generate token' });
-    }
-});
-
-// Send message via Ably (fallback endpoint)
+// Send message via Socket.IO (fallback endpoint)
 router.post('/messages/send', authMiddleware, async (req, res) => {
     try {
         const { recipientId, sessionId, text, messageType = 'text' } = req.body;
@@ -49,27 +21,26 @@ router.post('/messages/send', authMiddleware, async (req, res) => {
         if (recipientId) {
             // Private message
             messageData.recipientId = recipientId;
-            await ablyService.sendPrivateMessage(senderId, recipientId, messageData);
+            await global.socketService.sendPrivateMessage(senderId, recipientId, messageData);
         } else if (sessionId) {
             // Session message
             messageData.sessionId = sessionId;
-            await ablyService.sendSessionMessage(sessionId, messageData);
+            await global.socketService.sendSessionMessage(sessionId, messageData);
         } else {
             return res.status(400).json({ error: 'Either recipientId or sessionId is required' });
         }
 
         res.json({ success: true, messageId: messageData.messageId });
     } catch (error) {
-        console.error('Error sending message via Ably:', error);
+        console.error('Error sending message via Socket.IO:', error);
         res.status(500).json({ error: 'Failed to send message' });
     }
 });
 
-// Get channel history
-router.get('/channels/:channelName/history', authMiddleware, async (req, res) => {
+// Get online users in a channel
+router.get('/channels/:channelName/users', authMiddleware, async (req, res) => {
     try {
         const { channelName } = req.params;
-        const { limit = 50 } = req.query;
         const userId = req.user._id.toString();
 
         // Validate user has access to this channel
@@ -83,12 +54,12 @@ router.get('/channels/:channelName/history', authMiddleware, async (req, res) =>
             }
         }
 
-        const history = await ablyService.getChannelHistory(channelName, parseInt(limit));
+        const onlineUsers = await global.socketService.getOnlineUsers(channelName);
         
-        res.json({ messages: history });
+        res.json({ users: onlineUsers });
     } catch (error) {
-        console.error('Error getting channel history:', error);
-        res.status(500).json({ error: 'Failed to get channel history' });
+        console.error('Error getting online users:', error);
+        res.status(500).json({ error: 'Failed to get online users' });
     }
 });
 
@@ -97,7 +68,7 @@ router.post('/bot/notify', authMiddleware, async (req, res) => {
     try {
         const { userId, message, type = 'info' } = req.body;
         
-        const botMessage = await ablyService.sendFeynmanBotMessage(userId, message);
+        const botMessage = await global.socketService.sendFeynmanBotMessage(userId, message);
         
         res.json({ success: true, messageId: botMessage.messageId });
     } catch (error) {
@@ -120,7 +91,7 @@ router.post('/sessions/:sessionId/enrollment-update', authMiddleware, async (req
             timestamp: new Date().toISOString()
         };
 
-        await ablyService.broadcastEnrollmentUpdate(sessionId, enrollmentData);
+        await global.socketService.broadcastEnrollmentUpdate(sessionId, enrollmentData);
         
         res.json({ success: true });
     } catch (error) {
@@ -142,12 +113,31 @@ router.post('/sessions/:sessionId/status-update', authMiddleware, async (req, re
             timestamp: new Date().toISOString()
         };
 
-        await ablyService.broadcastSessionStatusUpdate(sessionId, statusData);
+        await global.socketService.broadcastSessionStatusUpdate(sessionId, statusData);
         
         res.json({ success: true });
     } catch (error) {
         console.error('Error broadcasting status update:', error);
         res.status(500).json({ error: 'Failed to broadcast status update' });
+    }
+});
+
+// Check connection status
+router.get('/status', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user._id.toString();
+        const isOnline = global.socketService.isUserOnline(userId);
+        const socketId = global.socketService.getUserSocket(userId);
+        
+        res.json({ 
+            isOnline, 
+            socketId,
+            userId,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Error checking connection status:', error);
+        res.status(500).json({ error: 'Failed to check connection status' });
     }
 });
 

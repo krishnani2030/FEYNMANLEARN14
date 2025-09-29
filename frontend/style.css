@@ -2020,12 +2020,74 @@ a:hover {
     color: var(--color-white);
     margin-left: auto;
     text-align: right;
+    padding-right: 3rem; /* Make room for status indicator */
 }
 
 .chat-message--other {
     background-color: var(--color-gray-light);
     color: var(--color-black);
     margin-right: auto;
+}
+
+/* Message status indicators */
+.message-status {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.25rem;
+    font-size: 0.6875rem;
+    opacity: 0.8;
+    color: rgba(255, 255, 255, 0.7);
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.message-status[data-status="sending"] {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.message-status[data-status="delivered"] {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.message-status[data-status="read"] {
+    color: var(--color-teal-300);
+}
+
+.message-status[data-status="error"] {
+    color: var(--color-red-400);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* Style for retry button */
+.retry-button {
+    background: var(--color-red-400);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.6rem;
+    cursor: pointer;
+    margin-left: 4px;
+    transition: background-color 0.2s;
+}
+
+.retry-button:hover {
+    background: var(--color-red-500);
+}
+
+/* Add a small dot before status text */
+.message-status::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    margin-right: 2px;
 }
 
 .chat-message--bot {

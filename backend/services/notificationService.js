@@ -1,6 +1,6 @@
 const User = require('../models/User');
 const Session = require('../models/Session');
-const ablyService = require('./ablyService');
+const socketService = require('./socketService');
 let ioInstance = null;
 
 function setSocketIo(io) { ioInstance = io; }
@@ -29,12 +29,12 @@ async function sendEmail(to, subject, text) {
 // Feynman Bot notification functions
 const sendFeynmanBotNotification = async (userId, message, type = 'info') => {
     try {
-        // Send via Ably if available
-        if (ablyService.client) {
-            await ablyService.sendFeynmanBotMessage(userId, message);
+        // Send via Socket.IO service if available
+        if (socketService && socketService.io) {
+            await socketService.sendFeynmanBotMessage(userId, message);
         }
         
-        // Fallback to Socket.IO
+        // Fallback to direct Socket.IO
         if (ioInstance) {
             ioInstance.to(`user_${userId}`).emit('feynman-bot-message', {
                 message,
