@@ -74,6 +74,23 @@ const sessionSchema = new mongoose.Schema({
             default: false
         }
     }],
+    discussion: [{
+        sender: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            required: true
+        },
+        message: {
+            type: String,
+            required: true,
+            trim: true,
+            maxlength: [1000, 'Discussion message cannot exceed 1000 characters']
+        },
+        createdAt: {
+            type: Date,
+            default: Date.now
+        }
+    }],
     status: {
         type: String,
         enum: ['upcoming', 'ongoing', 'completed', 'cancelled'],
@@ -165,6 +182,16 @@ sessionSchema.methods.unenrollUser = function(userId) {
     this.participants = this.participants.filter(
         p => p.user.toString() !== userId.toString()
     );
+    return this.save();
+};
+
+sessionSchema.methods.addDiscussionMessage = function(userId, message) {
+    this.discussion.push({
+        sender: userId,
+        message,
+        createdAt: new Date()
+    });
+
     return this.save();
 };
 

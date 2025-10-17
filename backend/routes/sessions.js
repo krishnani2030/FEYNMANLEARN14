@@ -193,4 +193,81 @@ router.get('/mine', authMiddleware, async (req, res) => {
     }
 });
 
+// Get discussion for a session
+router.get('/:id/discussion', optionalAuth, async (req, res) => {
+    try {
+        const session = await Session.findById(req.params.id)
+            .populate('discussion.sender', 'name email');
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        const discussion = (session.discussion || [])
+            .slice()
+            .sort((a, b) => a.createdAt - b.createdAt)
+            .map(entry => ({
+                id: entry._id,
+                message: entry.message,
+                createdAt: entry.createdAt,
+                sender: entry.sender ? {
+                    id: entry.sender._id,
+                    name: entry.sender.name,
+                    email: entry.sender.email
+                } : null
+            }));
+
+        res.json({ discussion });
+    } catch (error) {
+        console.error('Get discussion error:', error);
+        res.status(500).json({ error: 'Failed to fetch session discussion' });
+    }
+});
+
+// Post a message to session discussion
+router.post('/:id/discussion', authMiddleware, [
+    body('message').trim().isLength({ min: 1, max: 1000 }).withMessage('Message must be between 1 and 1000 characters')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+        }
+
+        const session = await Session.findById(req.params.id);
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        const messageContent = req.body.message.trim();
+
+        session.discussion.push({
+            sender: req.user._id,
+            message: messageContent,
+            createdAt: new Date()
+        });
+
+        await session.save();
+
+        const newMessage = session.discussion[session.discussion.length - 1];
+
+        res.status(201).json({
+            message: {
+                id: newMessage._id,
+                message: newMessage.message,
+                createdAt: newMessage.createdAt,
+                sender: {
+                    id: req.user._id,
+                    name: req.user.name,
+                    email: req.user.email
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Post discussion message error:', error);
+        res.status(500).json({ error: 'Failed to post discussion message' });
+    }
+});
+
 module.exports = router;

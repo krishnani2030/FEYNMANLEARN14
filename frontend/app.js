@@ -6,6 +6,11 @@ const API_BASE_URL = window.location.hostname === 'localhost' ? 'http://localhos
 // Mock data (will be replaced with API calls)
 let currentUser = null;
 let sessions = [];
+let chats = [];
+let activeChatId = null;
+const chatMessages = new Map();
+let chatPollingInterval = null;
+let currentDiscussionSessionId = null;
 let users = [
     {
         "id": "1",
@@ -265,6 +270,57 @@ async function enrollInSession(sessionId) {
     }
 }
 
+// Chat Functions
+async function getChatsList() {
+    const data = await apiRequest('/chats');
+    return data.chats || [];
+}
+
+async function createChatThread(participantId) {
+    const data = await apiRequest('/chats', {
+        method: 'POST',
+        body: JSON.stringify({ participantId })
+    });
+    return data.chat;
+}
+
+async function getChatMessages(chatId) {
+    return apiRequest(`/chats/${chatId}/messages`);
+}
+
+async function sendChatMessageRequest(chatId, content) {
+    const data = await apiRequest(`/chats/${chatId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content })
+    });
+    return data;
+}
+
+async function acknowledgeChatMessages(chatId, messageIds) {
+    if (!messageIds || messageIds.length === 0) {
+        return { updated: [] };
+    }
+
+    const data = await apiRequest(`/chats/${chatId}/messages/ack`, {
+        method: 'PATCH',
+        body: JSON.stringify({ messageIds })
+    });
+    return data;
+}
+
+async function getSessionDiscussionMessages(sessionId) {
+    const data = await apiRequest(`/sessions/${sessionId}/discussion`);
+    return data.discussion || [];
+}
+
+async function postSessionDiscussionMessage(sessionId, message) {
+    const data = await apiRequest(`/sessions/${sessionId}/discussion`, {
+        method: 'POST',
+        body: JSON.stringify({ message })
+    });
+    return data.message;
+}
+
 // Mock data functions (fallback when API is not available)
 function getMockSessions() {
     return [
@@ -333,6 +389,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Set up form event listeners
     setupFormEventListeners();
+    initializeChatUI();
 
     // Check if user is already logged in
     const savedUser = localStorage.getItem('user');
@@ -400,6 +457,23 @@ function setupFormEventListeners() {
     });
 }
 
+function initializeChatUI() {
+    const chatList = document.getElementById('chat-list');
+    if (chatList) {
+        chatList.addEventListener('click', handleChatListClick);
+    }
+
+    const chatForm = document.getElementById('chat-message-form');
+    if (chatForm) {
+        chatForm.addEventListener('submit', handleChatMessageSubmit);
+    }
+
+    const discussionForm = document.getElementById('session-discussion-form');
+    if (discussionForm) {
+        discussionForm.addEventListener('submit', handleSessionDiscussionSubmit);
+    }
+}
+
 // Rest of the original JavaScript code follows...
 // (The navigation, UI, and form handling functions remain the same)
 
@@ -431,6 +505,10 @@ function showDashboard() {
     document.getElementById('dashboard-page').classList.remove('hidden');
     currentView = 'dashboard';
     updateDashboard();
+    if (currentUser) {
+        startChatPolling();
+        fetchChatsAndRender(true);
+    }
     showSessionsTab('browse-sessions');
 }
 
@@ -524,6 +602,7 @@ async function handleSignup(event) {
 
 async function handleLogout() {
     await logout();
+    resetChatState();
     showLandingPage();
 }
 
@@ -719,12 +798,26 @@ function showSessionsTab(tab) {
     document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.add('hidden');
     });
-    document.getElementById(tab).classList.remove('hidden');
+    const tabContent = document.getElementById(tab);
+    if (tabContent) {
+        tabContent.classList.remove('hidden');
+    }
+
+    if (tab === 'messages') {
+        renderChatList();
+        if (currentUser) {
+            fetchChatsAndRender(!activeChatId);
+        }
+        return;
+    }
 
     updateSessionsList();
 }
 
 async function updateSessionsList() {
+    if (selectedSessionTab === 'messages') {
+        return;
+    }
     if (selectedSessionTab === 'browse-sessions') {
         // Show all sessions
         const container = document.getElementById('browse-sessions-list');
@@ -741,6 +834,397 @@ async function updateSessionsList() {
             const userSessions = sessions.filter(s => s.creatorId === currentUser?.id);
             displaySessions(userSessions, container, true);
         }
+    }
+}
+
+// Chat UI helpers
+function getChatPartner(chat) {
+    if (!chat || !Array.isArray(chat.participants)) {
+        return null;
+    }
+
+    const partner = chat.participants.find(participant => {
+        const participantId = participant?.id || participant?._id || participant;
+        const currentId = currentUser?.id || currentUser?._id;
+        return participantId && currentId && participantId.toString() !== currentId.toString();
+    });
+
+    return partner || chat.participants[0] || null;
+}
+
+function renderChatList() {
+    const chatListElement = document.getElementById('chat-list');
+    if (!chatListElement) {
+        return;
+    }
+
+    if (!currentUser) {
+        chatListElement.innerHTML = '<div class="chat-list-empty">Log in to start chatting.</div>';
+        return;
+    }
+
+    if (!chats || chats.length === 0) {
+        chatListElement.innerHTML = '<div class="chat-list-empty">No conversations yet.</div>';
+        return;
+    }
+
+    const sortedChats = [...chats].sort((a, b) => {
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+    });
+
+    chatListElement.innerHTML = sortedChats.map(chat => {
+        const partner = getChatPartner(chat);
+        const name = partner?.name || 'Conversation';
+        const email = partner?.email || '';
+        const chatId = chat.id || chat._id;
+        const timeLabel = chat.lastMessageAt ? formatChatTimestamp(chat.lastMessageAt) : '';
+        const snippet = chat.lastMessageSnippet ? escapeHtml(chat.lastMessageSnippet) : 'No messages yet';
+        const unreadBadge = chat.unreadCount > 0 ? `<span class="chat-unread-badge">${chat.unreadCount}</span>` : '';
+        const meta = `<div class="chat-item-meta">${timeLabel ? `<span class="chat-item-time">${timeLabel}</span>` : ''}${unreadBadge}</div>`;
+
+        return `
+            <div class="chat-item ${chatId === activeChatId ? 'active' : ''}" data-chat-id="${chatId}" data-partner-name="${escapeHtml(name)}" data-partner-email="${escapeHtml(email)}">
+                <div class="chat-item-header">
+                    <span class="chat-item-name">${escapeHtml(name)}</span>
+                    ${meta}
+                </div>
+                <p class="chat-item-snippet">${snippet}</p>
+            </div>
+        `;
+    }).join('');
+}
+
+function handleChatListClick(event) {
+    const chatItem = event.target.closest('.chat-item');
+    if (!chatItem) {
+        return;
+    }
+
+    const chatId = chatItem.getAttribute('data-chat-id');
+    if (!chatId) {
+        return;
+    }
+
+    if (chatId === activeChatId) {
+        return;
+    }
+
+    openChat(chatId);
+}
+
+async function openChat(chatId) {
+    activeChatId = chatId;
+    const chat = chats.find(thread => (thread.id || thread._id) === chatId);
+    const placeholder = document.getElementById('chat-placeholder');
+    const conversation = document.getElementById('chat-conversation');
+
+    if (placeholder && conversation) {
+        placeholder.classList.add('hidden');
+        conversation.classList.remove('hidden');
+    }
+
+    if (chat) {
+        const partner = getChatPartner(chat);
+        const nameElement = document.getElementById('chat-participant-name');
+        const emailElement = document.getElementById('chat-participant-email');
+        if (nameElement) {
+            nameElement.textContent = partner?.name || 'Conversation';
+        }
+        if (emailElement) {
+            emailElement.textContent = partner?.email || '';
+        }
+    }
+
+    renderChatList();
+    await loadChatMessages(chatId, { scroll: true });
+}
+
+async function loadChatMessages(chatId, { scroll = false } = {}) {
+    try {
+        const data = await getChatMessages(chatId);
+        const messages = data.messages || [];
+        chatMessages.set(chatId, messages);
+        updateChatSummary(data.chat);
+        renderChatMessages(chatId);
+        renderChatList();
+        await markMessagesDelivered(chatId, messages);
+        if (scroll) {
+            scrollChatToBottom();
+        }
+    } catch (error) {
+        console.error('Failed to load chat messages:', error);
+    }
+}
+
+function renderChatMessages(chatId) {
+    const container = document.getElementById('chat-messages');
+    if (!container) {
+        return;
+    }
+
+    const messages = chatMessages.get(chatId) || [];
+
+    if (messages.length === 0) {
+        container.innerHTML = '<div class="chat-notification">No messages yet. Start the conversation!</div>';
+        return;
+    }
+
+    container.innerHTML = messages.map(message => {
+        const outgoing = isOutgoingMessage(message);
+        const status = formatMessageStatus(message.status);
+        const timestamp = formatChatTimestamp(message.createdAt);
+        const statusMarkup = outgoing ? `<span class="chat-message-status">${status}</span>` : '';
+
+        return `
+            <div class="chat-message ${outgoing ? 'outgoing' : 'incoming'}" data-message-id="${message.id}">
+                <p class="chat-message-text">${escapeHtml(message.content)}</p>
+                <div class="chat-message-meta">
+                    <span>${timestamp}</span>
+                    ${statusMarkup}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    scrollChatToBottom();
+}
+
+function formatMessageStatus(status) {
+    switch (status) {
+        case 'sending':
+            return 'Sending…';
+        case 'sent':
+            return 'Sent';
+        case 'delivered':
+            return 'Delivered';
+        case 'read':
+            return 'Read';
+        case 'error':
+            return 'Failed';
+        default:
+            return status || '';
+    }
+}
+
+function isOutgoingMessage(message) {
+    const senderId = message?.sender?.id || message?.sender?._id || message?.sender;
+    const currentId = currentUser?.id || currentUser?._id;
+    return senderId && currentId && senderId.toString() === currentId.toString();
+}
+
+function scrollChatToBottom() {
+    const container = document.getElementById('chat-messages');
+    if (container) {
+        container.scrollTop = container.scrollHeight;
+    }
+}
+
+function resetChatConversationPanel() {
+    const placeholder = document.getElementById('chat-placeholder');
+    const conversation = document.getElementById('chat-conversation');
+    if (placeholder && conversation) {
+        placeholder.classList.remove('hidden');
+        conversation.classList.add('hidden');
+    }
+
+    const messagesContainer = document.getElementById('chat-messages');
+    if (messagesContainer) {
+        messagesContainer.innerHTML = '<div class="chat-notification">Select a conversation to get started.</div>';
+    }
+}
+
+function updateChatSummary(summary) {
+    if (!summary) {
+        return;
+    }
+
+    const chatId = summary.id || summary._id;
+    const existingIndex = chats.findIndex(chat => (chat.id || chat._id) === chatId);
+
+    if (existingIndex >= 0) {
+        chats[existingIndex] = { ...chats[existingIndex], ...summary };
+    } else {
+        chats.push(summary);
+    }
+
+    chats.sort((a, b) => {
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+    });
+}
+
+async function fetchChatsAndRender(forceReloadActive = false) {
+    if (!currentUser) {
+        return;
+    }
+
+    try {
+        const fetchedChats = await getChatsList();
+        chats = fetchedChats.sort((a, b) => {
+            const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+            const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+            return bTime - aTime;
+        });
+        renderChatList();
+
+        if (activeChatId) {
+            const hasActiveChat = chats.some(chat => (chat.id || chat._id) === activeChatId);
+            if (hasActiveChat && forceReloadActive) {
+                await loadChatMessages(activeChatId);
+            } else if (!hasActiveChat) {
+                activeChatId = null;
+                resetChatConversationPanel();
+            }
+        }
+    } catch (error) {
+        console.error('Failed to fetch chats:', error);
+    }
+}
+
+function startChatPolling() {
+    stopChatPolling();
+    if (!currentUser) {
+        return;
+    }
+
+    chatPollingInterval = setInterval(async () => {
+        await fetchChatsAndRender(false);
+        if (activeChatId) {
+            await loadChatMessages(activeChatId);
+        }
+    }, 5000);
+}
+
+function stopChatPolling() {
+    if (chatPollingInterval) {
+        clearInterval(chatPollingInterval);
+        chatPollingInterval = null;
+    }
+}
+
+function resetChatState() {
+    stopChatPolling();
+    chats = [];
+    activeChatId = null;
+    chatMessages.clear();
+    renderChatList();
+    resetChatConversationPanel();
+}
+
+async function handleChatMessageSubmit(event) {
+    event.preventDefault();
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    if (!activeChatId) {
+        showAlert('Select a chat before sending a message.', 'info');
+        return;
+    }
+
+    const input = document.getElementById('chat-message-input');
+    const content = input ? input.value.trim() : '';
+
+    if (!content) {
+        return;
+    }
+
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const temporaryMessage = {
+        id: tempId,
+        content,
+        status: 'sending',
+        createdAt: new Date().toISOString(),
+        sender: {
+            id: currentUser.id,
+            name: currentUser.name,
+            email: currentUser.email
+        }
+    };
+
+    const existingMessages = chatMessages.get(activeChatId) || [];
+    existingMessages.push(temporaryMessage);
+    chatMessages.set(activeChatId, existingMessages);
+    renderChatMessages(activeChatId);
+    scrollChatToBottom();
+
+    if (input) {
+        input.value = '';
+        input.focus();
+    }
+
+    try {
+        const response = await sendChatMessageRequest(activeChatId, content);
+        const savedMessage = response.message;
+        updateChatSummary(response.chat);
+
+        const updatedMessages = chatMessages.get(activeChatId) || [];
+        const messageIndex = updatedMessages.findIndex(msg => msg.id === tempId);
+        const formattedMessage = {
+            ...savedMessage,
+            status: savedMessage.status || 'delivered'
+        };
+
+        if (messageIndex >= 0) {
+            updatedMessages[messageIndex] = formattedMessage;
+        } else {
+            updatedMessages.push(formattedMessage);
+        }
+
+        chatMessages.set(activeChatId, updatedMessages);
+        renderChatMessages(activeChatId);
+        renderChatList();
+    } catch (error) {
+        console.error('Send chat message error:', error);
+        const storedMessages = chatMessages.get(activeChatId) || [];
+        const failed = storedMessages.find(msg => msg.id === tempId);
+        if (failed) {
+            failed.status = 'error';
+        }
+        chatMessages.set(activeChatId, storedMessages);
+        renderChatMessages(activeChatId);
+        showAlert('Failed to send message: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+async function markMessagesDelivered(chatId, messages) {
+    if (!messages || messages.length === 0) {
+        return;
+    }
+
+    const undeliveredMessages = messages.filter(message => !isOutgoingMessage(message) && message.status !== 'delivered');
+    if (undeliveredMessages.length === 0) {
+        return;
+    }
+
+    try {
+        const response = await acknowledgeChatMessages(chatId, undeliveredMessages.map(msg => msg.id));
+        const updates = response.updated || [];
+        if (updates.length > 0) {
+            const storedMessages = chatMessages.get(chatId) || [];
+            updates.forEach(update => {
+                const target = storedMessages.find(msg => msg.id === update.id);
+                if (target) {
+                    target.status = update.status;
+                    target.deliveredAt = update.deliveredAt;
+                }
+            });
+            chatMessages.set(chatId, storedMessages);
+            renderChatMessages(chatId);
+        }
+
+        const chat = chats.find(thread => (thread.id || thread._id) === chatId);
+        if (chat) {
+            chat.unreadCount = 0;
+            renderChatList();
+        }
+    } catch (error) {
+        console.error('Failed to acknowledge messages:', error);
     }
 }
 
@@ -790,6 +1274,8 @@ function displaySessions(sessionsList, container, isOwner = false) {
             actionButton = `<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`;
         }
 
+        const detailsButton = `<button class="btn btn--secondary btn--sm" onclick="openSessionDetails('${session.id || session._id}')">Details</button>`;
+
         // Convert backend level format to display format
         const displayLevel = session.level === 'high_school' ? 'High School' : 
                            session.level === 'college' ? 'College' : session.level;
@@ -810,11 +1296,222 @@ function displaySessions(sessionsList, container, isOwner = false) {
                     <p><strong>Participants:</strong> ${session.participants?.length || 0}/${session.maxParticipants}</p>
                 </div>
                 <div class="session-actions">
+                    ${detailsButton}
                     ${actionButton}
                 </div>
             </div>
         `;
     }).join('');
+}
+
+function openSessionDetails(sessionId) {
+    const session = sessions.find(item => (item.id || item._id) === sessionId);
+    if (!session) {
+        showAlert('Session not found.', 'error');
+        return;
+    }
+
+    const modal = document.getElementById('session-modal');
+    const modalDetails = document.getElementById('modal-details');
+    if (!modal || !modalDetails) {
+        return;
+    }
+
+    const creatorName = session.creatorName || session.creator?.name || 'Unknown instructor';
+    const sessionDate = formatDate(session.date);
+    const sessionTime = session.time || formatTime(session.date);
+    const creatorId = session.creatorId || session.creator?._id || (typeof session.creator === 'string' ? session.creator : null);
+    const currentUserId = currentUser?.id || currentUser?._id;
+    const canMessageInstructor = creatorId && (!currentUserId || creatorId.toString() !== currentUserId.toString());
+
+    modalDetails.innerHTML = `
+        <div class="session-details-overview">
+            <p><strong>Topic:</strong> ${escapeHtml(session.topic)}</p>
+            <p><strong>Instructor:</strong> ${escapeHtml(creatorName)}</p>
+            <p><strong>Level:</strong> ${escapeHtml(session.level === 'high_school' ? 'High School' : session.level === 'college' ? 'College' : session.level)}</p>
+            <p><strong>Date:</strong> ${escapeHtml(sessionDate)}</p>
+            <p><strong>Time:</strong> ${escapeHtml(sessionTime)}</p>
+            <p><strong>Participants:</strong> ${(session.participants?.length || 0)} / ${session.maxParticipants}</p>
+            ${canMessageInstructor ? '<button class="btn btn--secondary btn--sm" id="session-message-host">Message instructor</button>' : ''}
+        </div>
+    `;
+
+    currentDiscussionSessionId = sessionId;
+
+    const discussionContainer = document.getElementById('session-discussion-container');
+    const discussionForm = document.getElementById('session-discussion-form');
+    const discussionInput = document.getElementById('session-discussion-input');
+
+    if (discussionContainer) {
+        discussionContainer.classList.remove('hidden');
+    }
+
+    if (discussionForm) {
+        discussionForm.dataset.sessionId = sessionId;
+        const submitButton = discussionForm.querySelector('button[type="submit"]');
+        if (!currentUser) {
+            if (discussionInput) {
+                discussionInput.disabled = true;
+                discussionInput.placeholder = 'Log in to participate in the discussion';
+            }
+            if (submitButton) {
+                submitButton.disabled = true;
+            }
+        } else {
+            if (discussionInput) {
+                discussionInput.disabled = false;
+                discussionInput.placeholder = 'Share updates or ask a question';
+            }
+            if (submitButton) {
+                submitButton.disabled = false;
+            }
+        }
+    }
+
+    if (modal) {
+        modal.classList.remove('hidden');
+    }
+
+    if (canMessageInstructor) {
+        const messageButton = modalDetails.querySelector('#session-message-host');
+        if (messageButton) {
+            messageButton.addEventListener('click', async () => {
+                if (!currentUser) {
+                    showLogin();
+                    return;
+                }
+
+                try {
+                    const chat = await createChatThread(creatorId);
+                    updateChatSummary(chat);
+                    renderChatList();
+                    showSessionsTab('messages');
+                    openChat(chat.id || chat._id);
+                } catch (error) {
+                    console.error('Failed to start chat with instructor:', error);
+                    showAlert('Unable to start chat: ' + (error.message || 'Unknown error'), 'error');
+                }
+            });
+        }
+    }
+
+    loadSessionDiscussion(sessionId);
+}
+
+function closeModal() {
+    const modal = document.getElementById('session-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+    currentDiscussionSessionId = null;
+}
+
+async function loadSessionDiscussion(sessionId) {
+    try {
+        const messages = await getSessionDiscussionMessages(sessionId);
+        renderSessionDiscussion(messages);
+    } catch (error) {
+        console.error('Failed to load session discussion:', error);
+        renderSessionDiscussion([]);
+    }
+}
+
+function renderSessionDiscussion(messages) {
+    const thread = document.getElementById('session-discussion-thread');
+    const emptyState = document.getElementById('session-discussion-empty');
+
+    if (!thread || !emptyState) {
+        return;
+    }
+
+    if (!messages || messages.length === 0) {
+        thread.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+    }
+
+    emptyState.classList.add('hidden');
+    thread.innerHTML = messages.map(message => {
+        const author = message.sender?.name || 'Participant';
+        const timestamp = formatDiscussionTimestamp(message.createdAt);
+        return `
+            <div class="discussion-message">
+                <div class="discussion-message-header">
+                    <span class="discussion-message-author">${escapeHtml(author)}</span>
+                    <span class="discussion-message-time">${escapeHtml(timestamp)}</span>
+                </div>
+                <p class="discussion-message-text">${escapeHtml(message.message)}</p>
+            </div>
+        `;
+    }).join('');
+
+    thread.scrollTop = thread.scrollHeight;
+}
+
+function appendSessionDiscussionMessage(message) {
+    if (!message || message.session && message.session !== currentDiscussionSessionId) {
+        return;
+    }
+
+    const thread = document.getElementById('session-discussion-thread');
+    const emptyState = document.getElementById('session-discussion-empty');
+    if (!thread) {
+        return;
+    }
+
+    if (emptyState) {
+        emptyState.classList.add('hidden');
+    }
+
+    const author = message.sender?.name || 'Participant';
+    const timestamp = formatDiscussionTimestamp(message.createdAt);
+    const markup = `
+        <div class="discussion-message">
+            <div class="discussion-message-header">
+                <span class="discussion-message-author">${escapeHtml(author)}</span>
+                <span class="discussion-message-time">${escapeHtml(timestamp)}</span>
+            </div>
+            <p class="discussion-message-text">${escapeHtml(message.message)}</p>
+        </div>
+    `;
+
+    thread.insertAdjacentHTML('beforeend', markup);
+    thread.scrollTop = thread.scrollHeight;
+}
+
+async function handleSessionDiscussionSubmit(event) {
+    event.preventDefault();
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    const form = event.target;
+    const sessionId = form.dataset.sessionId || currentDiscussionSessionId;
+    if (!sessionId) {
+        return;
+    }
+
+    const input = document.getElementById('session-discussion-input');
+    const message = input ? input.value.trim() : '';
+
+    if (!message) {
+        return;
+    }
+
+    try {
+        const savedMessage = await postSessionDiscussionMessage(sessionId, message);
+        if (input) {
+            input.value = '';
+        }
+        if (sessionId === currentDiscussionSessionId) {
+            appendSessionDiscussionMessage(savedMessage);
+        }
+    } catch (error) {
+        console.error('Failed to post discussion message:', error);
+        showAlert('Failed to post message: ' + (error.message || 'Unknown error'), 'error');
+    }
 }
 
 // Alert system
@@ -846,6 +1543,48 @@ function formatDate(dateString) {
 function formatTime(dateString) {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatChatTimestamp(dateString) {
+    if (!dateString) {
+        return '';
+    }
+
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDiscussionTimestamp(dateString) {
+    if (!dateString) {
+        return '';
+    }
+
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+
+    const datePart = date.toLocaleDateString();
+    const timePart = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `${datePart} ${timePart}`;
+}
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+
+    return value
+        .toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 // Set minimum date to today for session creation

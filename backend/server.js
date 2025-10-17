@@ -12,6 +12,7 @@ require('dotenv').config();
 const authRoutes = require('./routes/auth');
 const sessionRoutes = require('./routes/sessions');
 const userRoutes = require('./routes/users');
+const chatRoutes = require('./routes/chats');
 const { notifySessionStart } = require('./services/notificationService');
 const { checkOngoingSessions } = require('./services/sessionService');
 
@@ -104,6 +105,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/feynman-l
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/chats', chatRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
