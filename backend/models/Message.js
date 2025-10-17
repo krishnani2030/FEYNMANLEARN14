@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 
-// Encryption configuration
+// Toggleable encryption configuration
+const ENCRYPT_MESSAGES = process.env.ENABLE_MESSAGE_ENCRYPTION === 'true';
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32); // 32 bytes key
 const IV_LENGTH = 16; // For AES, this is always 16
 
@@ -74,8 +75,12 @@ const messageSchema = new mongoose.Schema({
 messageSchema.pre('save', function(next) {
     // Only encrypt private messages (messages with a recipient)
     if (this.recipient && this.text && !this.isEncrypted) {
-        this.text = encrypt(this.text);
-        this.isEncrypted = true;
+        if (ENCRYPT_MESSAGES) {
+            this.text = encrypt(this.text);
+            this.isEncrypted = true;
+        } else {
+            this.isEncrypted = false;
+        }
     }
     next();
 });
@@ -92,9 +97,14 @@ messageSchema.methods.getDecryptedText = function() {
 messageSchema.set('toJSON', {
     transform: function(doc, ret) {
         if (ret.isEncrypted && ret.recipient) {
-            ret.text = decrypt(ret.text);
+            try {
+                ret.text = decrypt(ret.text);
+                ret.isEncrypted = false;
+            } catch (error) {
+                // If decryption fails, keep original values but log for debugging
+                console.error('Failed to decrypt message text during toJSON transform:', error);
+            }
         }
-        delete ret.isEncrypted; // Don't expose encryption status in API
         return ret;
     }
 });

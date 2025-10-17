@@ -51,7 +51,7 @@ router.get('/session/:sessionId', authMiddleware, async (req, res) => {
         }
         const messages = await Message.find(query)
             .sort({ timestamp: 1 })
-            .select('sender senderName senderUsername text timestamp');
+            .select('sender senderName senderUsername text timestamp isEncrypted recipient');
         res.json({ messages });
     } catch (error) {
         console.error('Error fetching general chat messages:', error);
@@ -70,7 +70,7 @@ router.get('/private/:recipientId', authMiddleware, async (req, res) => {
                 { sender: userId, recipient: recipientId },
                 { sender: recipientId, recipient: userId },
             ]
-        }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp');
+        }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp isEncrypted');
         res.json({ messages });
     } catch (error) {
         console.error('Error fetching private chat messages:', error);
@@ -92,7 +92,7 @@ router.get('/history/:recipientId', authMiddleware, async (req, res) => {
                 sender: null,
                 recipient: userId,
                 senderName: 'Feynman Bot'
-            }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp');
+            }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp isEncrypted');
 
             console.log(`Found ${messages.length} bot messages`);
             res.json({ messages });
@@ -104,7 +104,7 @@ router.get('/history/:recipientId', authMiddleware, async (req, res) => {
                 { sender: userId, recipient: recipientId },
                 { sender: recipientId, recipient: userId }
             ]
-        }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp');
+        }).sort({ timestamp: 1 }).select('sender senderName senderUsername recipient recipientUsername text timestamp isEncrypted');
 
         console.log(`Found ${messages.length} messages between users`);
         res.json({ messages });
