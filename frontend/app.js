@@ -9,6 +9,10 @@ let sessions = [];
 let chats = [];
 let activeChatId = null;
 const chatMessages = new Map();
+let notes = [];
+let activeNoteId = null;
+let chatUserSearchTimeout = null;
+let isNewChatPanelVisible = false;
 
 function getMessageId(message) {
     return message?.id || message?._id || null;
@@ -377,6 +381,17 @@ async function getChatMessages(chatId) {
     return apiRequest(`/chats/${chatId}/messages`);
 }
 
+async function searchUsersForChat(query) {
+    const params = new URLSearchParams();
+    if (query) {
+        params.append('search', query);
+    }
+
+    const endpoint = params.toString() ? `/users?${params.toString()}` : '/users';
+    const data = await apiRequest(endpoint);
+    return data.users || [];
+}
+
 async function sendChatMessageRequest(chatId, content) {
     const data = await apiRequest(`/chats/${chatId}/messages`, {
         method: 'POST',
@@ -491,6 +506,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Set up form event listeners
     setupFormEventListeners();
     initializeChatUI();
+    initializeNotesUI();
+    renderNotesList();
+    renderNotesEditor();
 
     // Check if user is already logged in
     const savedUser = localStorage.getItem('user');
@@ -573,6 +591,49 @@ function initializeChatUI() {
     if (discussionForm) {
         discussionForm.addEventListener('submit', handleSessionDiscussionSubmit);
     }
+
+    const startChatButton = document.getElementById('start-chat-button');
+    if (startChatButton) {
+        startChatButton.addEventListener('click', () => {
+            if (!currentUser) {
+                showLogin();
+                return;
+            }
+            toggleNewChatPanel();
+        });
+    }
+
+    const chatUserSearch = document.getElementById('chat-user-search');
+    if (chatUserSearch) {
+        chatUserSearch.addEventListener('input', handleChatUserSearchInput);
+    }
+
+    const chatUserResults = document.getElementById('chat-user-results');
+    if (chatUserResults) {
+        chatUserResults.addEventListener('click', handleChatUserResultsClick);
+    }
+}
+
+function initializeNotesUI() {
+    const addNoteButton = document.getElementById('add-note-button');
+    if (addNoteButton) {
+        addNoteButton.addEventListener('click', handleAddNote);
+    }
+
+    const notesListElement = document.getElementById('notes-list');
+    if (notesListElement) {
+        notesListElement.addEventListener('click', handleNotesListClick);
+    }
+
+    const notesForm = document.getElementById('notes-editor-form');
+    if (notesForm) {
+        notesForm.addEventListener('submit', handleNoteFormSubmit);
+    }
+
+    const deleteButton = document.getElementById('delete-note-button');
+    if (deleteButton) {
+        deleteButton.addEventListener('click', handleDeleteNote);
+    }
 }
 
 // Rest of the original JavaScript code follows...
@@ -607,9 +668,13 @@ function showDashboard() {
     currentView = 'dashboard';
     updateDashboard();
     if (currentUser) {
+        loadNotesForCurrentUser();
         startChatPolling();
         fetchChatsAndRender(true);
+    } else {
+        resetNotesState();
     }
+    toggleNewChatPanel(false);
     showSessionsTab('browse-sessions');
 }
 
@@ -704,6 +769,7 @@ async function handleSignup(event) {
 async function handleLogout() {
     await logout();
     resetChatState();
+    resetNotesState();
     showLandingPage();
 }
 
@@ -912,6 +978,12 @@ function showSessionsTab(tab) {
         return;
     }
 
+    if (tab === 'notes') {
+        renderNotesList();
+        renderNotesEditor();
+        return;
+    }
+
     updateSessionsList();
 }
 
@@ -936,6 +1008,332 @@ async function updateSessionsList() {
             displaySessions(userSessions, container, true);
         }
     }
+}
+
+// Notes helpers
+function getNotesStorageKey() {
+    const userId = currentUser?.id || currentUser?._id || currentUser?.email;
+    return userId ? `feynman-notes-${userId}` : 'feynman-notes';
+}
+
+function getNotesActiveStorageKey() {
+    const userId = currentUser?.id || currentUser?._id || currentUser?.email;
+    return userId ? `feynman-notes-active-${userId}` : 'feynman-notes-active';
+}
+
+function createDefaultNotes() {
+    const now = new Date().toISOString();
+    return [{
+        id: `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        title: 'Plan your next explanation',
+        content: 'Use Feynman notes to break complicated ideas into simple language. Outline what you will teach, the analogies you will use, and the gaps you still need to fill.',
+        createdAt: now,
+        updatedAt: now
+    }];
+}
+
+function normalizeNote(note) {
+    if (!note) {
+        return null;
+    }
+
+    const createdAt = note.createdAt || note.updatedAt || new Date().toISOString();
+    return {
+        id: note.id || note._id || `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        title: note.title || 'Untitled note',
+        content: note.content || '',
+        createdAt,
+        updatedAt: note.updatedAt || createdAt
+    };
+}
+
+function sortNotesDescending(list) {
+    return [...list].sort((a, b) => {
+        const aTime = new Date(a.updatedAt || a.createdAt).getTime();
+        const bTime = new Date(b.updatedAt || b.createdAt).getTime();
+        return bTime - aTime;
+    });
+}
+
+function loadNotesForCurrentUser() {
+    if (!currentUser) {
+        resetNotesState();
+        return;
+    }
+
+    const storageKey = getNotesStorageKey();
+    const stored = localStorage.getItem(storageKey);
+    let parsedNotes = [];
+
+    if (stored) {
+        try {
+            const raw = JSON.parse(stored);
+            parsedNotes = Array.isArray(raw) ? raw.map(normalizeNote).filter(Boolean) : [];
+        } catch (error) {
+            console.warn('Failed to parse stored notes, resetting.', error);
+            parsedNotes = [];
+        }
+    } else {
+        parsedNotes = createDefaultNotes();
+        localStorage.setItem(storageKey, JSON.stringify(parsedNotes));
+    }
+
+    notes = sortNotesDescending(parsedNotes);
+
+    const storedActiveId = localStorage.getItem(getNotesActiveStorageKey());
+    if (storedActiveId && notes.some(note => note.id === storedActiveId)) {
+        activeNoteId = storedActiveId;
+    } else {
+        activeNoteId = notes.length > 0 ? notes[0].id : null;
+    }
+
+    renderNotesList();
+    renderNotesEditor();
+    persistActiveNoteId();
+}
+
+function saveNotesForCurrentUser() {
+    if (!currentUser) {
+        return;
+    }
+
+    const storageKey = getNotesStorageKey();
+    const payload = notes.map(note => ({
+        id: note.id,
+        title: note.title,
+        content: note.content,
+        createdAt: note.createdAt,
+        updatedAt: note.updatedAt
+    }));
+
+    localStorage.setItem(storageKey, JSON.stringify(payload));
+    persistActiveNoteId();
+}
+
+function persistActiveNoteId() {
+    if (!currentUser) {
+        return;
+    }
+
+    const activeKey = getNotesActiveStorageKey();
+    if (activeNoteId) {
+        localStorage.setItem(activeKey, activeNoteId);
+    } else {
+        localStorage.removeItem(activeKey);
+    }
+}
+
+function renderNotesList() {
+    const listElement = document.getElementById('notes-list');
+    if (!listElement) {
+        return;
+    }
+
+    if (!currentUser) {
+        listElement.innerHTML = '<div class="notes-list-empty">Log in to access your notes.</div>';
+        return;
+    }
+
+    if (!notes || notes.length === 0) {
+        listElement.innerHTML = '<div class="notes-list-empty">No notes yet. Create a note to capture your ideas.</div>';
+        return;
+    }
+
+    notes = sortNotesDescending(notes);
+
+    listElement.innerHTML = notes.map(note => {
+        const id = escapeHtml(note.id);
+        const title = escapeHtml(note.title || 'Untitled note');
+        const previewSource = note.content ? note.content.replace(/\s+/g, ' ').trim() : '';
+        const preview = previewSource ? escapeHtml(previewSource.slice(0, 80) + (previewSource.length > 80 ? '…' : '')) : 'Add details to this note.';
+        const updated = note.updatedAt ? formatNoteTimestamp(note.updatedAt) : '';
+        const meta = updated ? `<span>${escapeHtml(updated)}</span>` : '';
+
+        return `
+            <button type="button" class="notes-list-item ${note.id === activeNoteId ? 'active' : ''}" data-note-id="${id}">
+                <div class="notes-list-item-title">${title}</div>
+                <div class="notes-list-item-meta">${meta}</div>
+                <p class="notes-list-item-preview">${preview}</p>
+            </button>
+        `;
+    }).join('');
+}
+
+function renderNotesEditor() {
+    const emptyState = document.getElementById('notes-empty-state');
+    const form = document.getElementById('notes-editor-form');
+    const titleInput = document.getElementById('note-title-input');
+    const contentInput = document.getElementById('note-content-input');
+    const updatedElement = document.getElementById('note-updated-at');
+
+    if (!emptyState || !form) {
+        return;
+    }
+
+    if (!currentUser) {
+        form.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        emptyState.innerHTML = '<h4>Notes unavailable</h4><p>Log in to create and review your notes.</p>';
+        return;
+    }
+
+    if (!activeNoteId) {
+        form.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        emptyState.innerHTML = '<h4>No note selected</h4><p>Create or choose a note to start capturing insights.</p>';
+        return;
+    }
+
+    const note = notes.find(item => item.id === activeNoteId);
+
+    if (!note) {
+        activeNoteId = null;
+        renderNotesList();
+        renderNotesEditor();
+        return;
+    }
+
+    emptyState.classList.add('hidden');
+    form.classList.remove('hidden');
+
+    if (titleInput) {
+        titleInput.value = note.title || '';
+    }
+    if (contentInput) {
+        contentInput.value = note.content || '';
+    }
+    if (updatedElement) {
+        updatedElement.textContent = note.updatedAt ? `Updated ${formatNoteTimestamp(note.updatedAt)}` : '';
+    }
+}
+
+function handleAddNote() {
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    const now = new Date().toISOString();
+    const newNote = {
+        id: `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        title: 'Untitled note',
+        content: '',
+        createdAt: now,
+        updatedAt: now
+    };
+
+    notes = [newNote, ...notes];
+    activeNoteId = newNote.id;
+    saveNotesForCurrentUser();
+    renderNotesList();
+    renderNotesEditor();
+    focusNoteTitle();
+}
+
+function handleNotesListClick(event) {
+    const item = event.target.closest('.notes-list-item');
+    if (!item) {
+        return;
+    }
+
+    const noteId = item.getAttribute('data-note-id');
+    if (!noteId || noteId === activeNoteId) {
+        return;
+    }
+
+    activeNoteId = noteId;
+    persistActiveNoteId();
+    renderNotesList();
+    renderNotesEditor();
+}
+
+function handleNoteFormSubmit(event) {
+    event.preventDefault();
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    if (!activeNoteId) {
+        return;
+    }
+
+    const titleInput = document.getElementById('note-title-input');
+    const contentInput = document.getElementById('note-content-input');
+    const title = titleInput ? titleInput.value.trim() : '';
+    const content = contentInput ? contentInput.value.trim() : '';
+
+    const index = notes.findIndex(note => note.id === activeNoteId);
+    if (index === -1) {
+        return;
+    }
+
+    const now = new Date().toISOString();
+    notes[index] = {
+        ...notes[index],
+        title: title || 'Untitled note',
+        content,
+        updatedAt: now
+    };
+
+    notes = sortNotesDescending(notes);
+    saveNotesForCurrentUser();
+    renderNotesList();
+    renderNotesEditor();
+}
+
+function handleDeleteNote(event) {
+    event.preventDefault();
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    if (!activeNoteId) {
+        return;
+    }
+
+    notes = notes.filter(note => note.id !== activeNoteId);
+    notes = sortNotesDescending(notes);
+    activeNoteId = notes.length > 0 ? notes[0].id : null;
+    saveNotesForCurrentUser();
+    renderNotesList();
+    renderNotesEditor();
+}
+
+function resetNotesState() {
+    notes = [];
+    activeNoteId = null;
+    renderNotesList();
+    renderNotesEditor();
+}
+
+function focusNoteTitle() {
+    const titleInput = document.getElementById('note-title-input');
+    if (titleInput) {
+        titleInput.focus();
+        titleInput.select();
+    }
+}
+
+function formatNoteTimestamp(dateString) {
+    if (!dateString) {
+        return '';
+    }
+
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+
+    return date.toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
 }
 
 // Chat UI helpers
@@ -997,6 +1395,134 @@ function renderChatList() {
     }).join('');
 }
 
+function toggleNewChatPanel(forceState = null) {
+    const panel = document.getElementById('chat-new');
+    const button = document.getElementById('start-chat-button');
+    const searchInput = document.getElementById('chat-user-search');
+
+    if (!panel || !button) {
+        return;
+    }
+
+    let shouldShow = typeof forceState === 'boolean' ? forceState : !isNewChatPanelVisible;
+
+    if (!currentUser) {
+        shouldShow = false;
+    }
+
+    if (shouldShow) {
+        panel.classList.remove('hidden');
+        button.textContent = 'Cancel';
+        isNewChatPanelVisible = true;
+        if (searchInput) {
+            searchInput.value = '';
+            searchInput.focus();
+        }
+        renderChatUserResults([], '');
+    } else {
+        panel.classList.add('hidden');
+        button.textContent = 'New Chat';
+        isNewChatPanelVisible = false;
+        if (searchInput) {
+            searchInput.value = '';
+        }
+        renderChatUserResults([], '');
+    }
+}
+
+function handleChatUserSearchInput(event) {
+    const query = event.target.value.trim();
+
+    if (chatUserSearchTimeout) {
+        clearTimeout(chatUserSearchTimeout);
+    }
+
+    if (!query) {
+        renderChatUserResults([], '');
+        return;
+    }
+
+    chatUserSearchTimeout = setTimeout(async () => {
+        try {
+            const users = await searchUsersForChat(query);
+            renderChatUserResults(users, query);
+        } catch (error) {
+            console.error('Failed to search users for chat:', error);
+            const container = document.getElementById('chat-user-results');
+            if (container) {
+                container.innerHTML = '<div class="chat-user-results-empty">Unable to search right now. Please try again.</div>';
+            }
+        }
+    }, 250);
+}
+
+function renderChatUserResults(users, query) {
+    const container = document.getElementById('chat-user-results');
+    if (!container) {
+        return;
+    }
+
+    if (!currentUser) {
+        container.innerHTML = '<div class="chat-user-results-empty">Log in to start new conversations.</div>';
+        return;
+    }
+
+    if (!query) {
+        container.innerHTML = '<div class="chat-user-results-empty">Start typing to find someone to message.</div>';
+        return;
+    }
+
+    if (!users || users.length === 0) {
+        container.innerHTML = `<div class="chat-user-results-empty">No people found for "${escapeHtml(query)}".</div>`;
+        return;
+    }
+
+    container.innerHTML = users.map(user => {
+        const userId = user.id || user._id || '';
+        const name = user.name || user.email || 'Member';
+        const email = user.email ? `<span class="chat-user-result-email">${escapeHtml(user.email)}</span>` : '';
+        return `
+            <button type="button" class="chat-user-result" data-user-id="${escapeHtml(userId)}">
+                <span class="chat-user-result-name">${escapeHtml(name)}</span>
+                ${email}
+            </button>
+        `;
+    }).join('');
+}
+
+function handleChatUserResultsClick(event) {
+    const target = event.target.closest('.chat-user-result');
+    if (!target) {
+        return;
+    }
+
+    const userId = target.getAttribute('data-user-id');
+    if (!userId) {
+        return;
+    }
+
+    startChatWithUser(userId);
+}
+
+async function startChatWithUser(userId) {
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    try {
+        const chat = await createChatThread(userId);
+        updateChatSummary(chat);
+        renderChatList();
+        toggleNewChatPanel(false);
+        showSessionsTab('messages');
+        await openChat(chat.id || chat._id);
+    } catch (error) {
+        console.error('Failed to start chat:', error);
+        showAlert('Unable to start chat: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
 function handleChatListClick(event) {
     const chatItem = event.target.closest('.chat-item');
     if (!chatItem) {
@@ -1017,6 +1543,7 @@ function handleChatListClick(event) {
 
 async function openChat(chatId) {
     activeChatId = chatId;
+    toggleNewChatPanel(false);
     const chat = chats.find(thread => (thread.id || thread._id) === chatId);
     const placeholder = document.getElementById('chat-placeholder');
     const conversation = document.getElementById('chat-conversation');
@@ -1214,6 +1741,7 @@ function resetChatState() {
     chatMessages.clear();
     renderChatList();
     resetChatConversationPanel();
+    toggleNewChatPanel(false);
 }
 
 async function handleChatMessageSubmit(event) {

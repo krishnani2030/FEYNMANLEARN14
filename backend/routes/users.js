@@ -1,8 +1,42 @@
 const express = require('express');
 const User = require('../models/User');
-const { authMiddleware, adminOnly } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
+
+const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+router.get('/', authMiddleware, async (req, res) => {
+    try {
+        const search = (req.query.search || '').trim();
+        const query = { _id: { $ne: req.user._id } };
+
+        if (search) {
+            const pattern = new RegExp(escapeRegex(search), 'i');
+            query.$or = [
+                { name: pattern },
+                { email: pattern }
+            ];
+        }
+
+        const users = await User.find(query)
+            .select('name email')
+            .sort({ name: 1 })
+            .limit(20)
+            .lean();
+
+        res.json({
+            users: users.map(user => ({
+                id: user._id.toString(),
+                name: user.name,
+                email: user.email
+            }))
+        });
+    } catch (error) {
+        console.error('Search users error:', error);
+        res.status(500).json({ error: 'Failed to search users' });
+    }
+});
 
 // Get user profile (public - limited info)
 router.get('/:id', async (req, res) => {

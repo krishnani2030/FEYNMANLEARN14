@@ -205,6 +205,7 @@
                         <div class="dashboard-nav">
                             <button class="nav-tab active" data-tab="my-sessions">My Sessions</button>
                             <button class="nav-tab" data-tab="browse-sessions">Browse Sessions</button>
+                            <button class="nav-tab" data-tab="notes">Notes</button>
                             <button class="nav-tab" data-tab="messages">Messages</button>
                             <button class="btn btn--primary" onclick="showCreateSession()">Create Session</button>
                         </div>
@@ -227,12 +228,66 @@
                             </div>
                         </div>
 
+                        <div id="notes" class="tab-content hidden">
+                            <div class="notes-layout">
+                                <aside class="notes-sidebar">
+                                    <div class="notes-sidebar-header">
+                                        <div>
+                                            <h3>Notes</h3>
+                                            <p class="notes-sidebar-subtitle">Capture your teaching insights</p>
+                                        </div>
+                                        <button id="add-note-button" class="btn btn--secondary btn--sm">New Note</button>
+                                    </div>
+                                    <div id="notes-list" class="notes-list">
+                                        <!-- Notes will be listed here -->
+                                    </div>
+                                </aside>
+                                <section class="notes-editor" id="notes-editor">
+                                    <div id="notes-empty-state" class="notes-empty">
+                                        <h4>No note selected</h4>
+                                        <p>Create a note to start organising your thoughts.</p>
+                                    </div>
+                                    <form id="notes-editor-form" class="notes-editor-form hidden">
+                                        <div class="notes-editor-field">
+                                            <label for="note-title-input" class="form-label">Title</label>
+                                            <input type="text" id="note-title-input" class="form-control" placeholder="e.g., Explain Maxwell's equations" maxlength="120" required>
+                                        </div>
+                                        <div class="notes-editor-field">
+                                            <label for="note-content-input" class="form-label">Content</label>
+                                            <textarea id="note-content-input" class="form-control notes-editor-textarea" rows="10" placeholder="Break concepts into simple explanations..." required></textarea>
+                                        </div>
+                                        <div class="notes-editor-actions">
+                                            <div class="notes-editor-meta">
+                                                <span id="note-updated-at" class="notes-meta"></span>
+                                            </div>
+                                            <div class="notes-editor-buttons">
+                                                <button type="button" id="delete-note-button" class="btn btn--danger btn--sm">Delete</button>
+                                                <button type="submit" class="btn btn--primary btn--sm">Save</button>
+                                            </div>
+                                        </div>
+                                    </form>
+                                </section>
+                            </div>
+                        </div>
+
                         <div id="messages" class="tab-content hidden">
                             <div class="messages-layout">
                                 <aside class="chat-sidebar">
                                     <div class="chat-sidebar-header">
                                         <h3>Chats</h3>
                                         <p class="chat-sidebar-subtitle">Recent conversations</p>
+                                    </div>
+                                    <div class="chat-sidebar-actions">
+                                        <button id="start-chat-button" class="btn btn--secondary btn--sm">New Chat</button>
+                                    </div>
+                                    <div id="chat-new" class="chat-new hidden">
+                                        <div class="chat-new-field">
+                                            <label for="chat-user-search" class="form-label">Search people</label>
+                                            <input type="text" id="chat-user-search" class="form-control" placeholder="Type a name or email" autocomplete="off">
+                                        </div>
+                                        <div id="chat-user-results" class="chat-user-results">
+                                            <div class="chat-user-results-empty">Start typing to find someone to message.</div>
+                                        </div>
                                     </div>
                                     <div id="chat-list" class="chat-list">
                                         <!-- Chats will be listed here -->

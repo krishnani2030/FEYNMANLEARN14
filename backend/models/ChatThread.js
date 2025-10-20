@@ -70,7 +70,27 @@ chatThreadSchema.methods.addMessage = function(senderId, content) {
 };
 
 chatThreadSchema.methods.ensureParticipant = function(userId) {
-    return this.participants.some(participant => participant.toString() === userId.toString());
+    if (!userId) {
+        return false;
+    }
+
+    const targetId = userId.toString();
+
+    return this.participants.some(participant => {
+        if (!participant) {
+            return false;
+        }
+
+        if (participant._id) {
+            return participant._id.toString() === targetId;
+        }
+
+        if (typeof participant === 'object' && participant.id) {
+            return participant.id.toString() === targetId;
+        }
+
+        return participant.toString() === targetId;
+    });
 };
 
 module.exports = mongoose.model('ChatThread', chatThreadSchema);
