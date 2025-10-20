@@ -14,8 +14,11 @@ const formatChatSummary = (chat, currentUserId) => {
     const lastMessage = messages[messages.length - 1];
     const lastMessageAt = chat.lastMessageAt || (lastMessage ? lastMessage.createdAt : null);
     const snippet = chat.lastMessageSnippet || (lastMessage ? lastMessage.content : '');
+    const currentUserIdStr = currentUserId.toString();
     const unreadCount = messages.reduce((count, message) => {
-        if (message.sender.toString() !== currentUserId.toString() && message.status !== 'delivered') {
+        const senderId = message.sender?.toString?.() || message.sender;
+        const status = message.status;
+        if (senderId && senderId !== currentUserIdStr && status !== 'read') {
             return count + 1;
         }
         return count;
@@ -116,6 +119,7 @@ router.get('/:chatId/messages', async (req, res) => {
                 status: message.status,
                 createdAt: message.createdAt,
                 deliveredAt: message.deliveredAt,
+                readAt: message.readAt,
                 sender: message.sender ? {
                     id: message.sender._id,
                     name: message.sender.name,
@@ -204,19 +208,30 @@ router.patch('/:chatId/messages/ack', [
         const now = new Date();
 
         chat.messages.forEach(message => {
-            if (
-                idsToUpdate.has(message._id.toString()) &&
-                message.sender.toString() !== req.user._id.toString() &&
-                message.status !== 'delivered'
-            ) {
+            if (!idsToUpdate.has(message._id.toString())) {
+                return;
+            }
+
+            const senderId = message.sender?.toString?.() || message.sender;
+            if (!senderId || senderId === req.user._id.toString()) {
+                return;
+            }
+
+            if (message.status === 'sent') {
                 message.status = 'delivered';
                 message.deliveredAt = now;
-                updatedMessages.push({
-                    id: message._id,
-                    status: message.status,
-                    deliveredAt: message.deliveredAt
-                });
             }
+
+            if (message.status === 'delivered' && !message.deliveredAt) {
+                message.deliveredAt = now;
+            }
+
+            updatedMessages.push({
+                id: message._id,
+                status: message.status,
+                deliveredAt: message.deliveredAt,
+                readAt: message.readAt
+            });
         });
 
         if (updatedMessages.length > 0) {
@@ -227,6 +242,69 @@ router.patch('/:chatId/messages/ack', [
     } catch (error) {
         console.error('Acknowledge messages error:', error);
         res.status(500).json({ error: 'Failed to update message status' });
+    }
+});
+
+router.patch('/:chatId/messages/read', [
+    body('messageIds').isArray({ min: 1 }).withMessage('messageIds must be a non-empty array')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+        }
+
+        const chat = await ChatThread.findById(req.params.chatId)
+            .populate('participants', 'name email');
+
+        if (!chat) {
+            return res.status(404).json({ error: 'Chat not found' });
+        }
+
+        if (!chat.ensureParticipant(req.user._id)) {
+            return res.status(403).json({ error: 'You do not have access to this chat' });
+        }
+
+        const idsToUpdate = new Set(req.body.messageIds.map(id => id.toString()));
+        const updatedMessages = [];
+        const now = new Date();
+
+        chat.messages.forEach(message => {
+            if (!idsToUpdate.has(message._id.toString())) {
+                return;
+            }
+
+            const senderId = message.sender?.toString?.() || message.sender;
+            if (!senderId || senderId === req.user._id.toString()) {
+                return;
+            }
+
+            if (message.status !== 'read') {
+                if (!message.deliveredAt) {
+                    message.deliveredAt = now;
+                }
+                message.status = 'read';
+                message.readAt = now;
+                updatedMessages.push({
+                    id: message._id,
+                    status: message.status,
+                    deliveredAt: message.deliveredAt,
+                    readAt: message.readAt
+                });
+            }
+        });
+
+        if (updatedMessages.length > 0) {
+            await chat.save();
+        }
+
+        res.json({
+            updated: updatedMessages,
+            chat: formatChatSummary(chat.toObject(), req.user._id)
+        });
+    } catch (error) {
+        console.error('Mark messages read error:', error);
+        res.status(500).json({ error: 'Failed to mark messages as read' });
     }
 });
 

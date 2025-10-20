@@ -9,6 +9,95 @@ let sessions = [];
 let chats = [];
 let activeChatId = null;
 const chatMessages = new Map();
+
+function getMessageId(message) {
+    return message?.id || message?._id || null;
+}
+
+function normalizeChatMessage(message) {
+    if (!message) {
+        return null;
+    }
+
+    const id = getMessageId(message);
+    const createdAt = message.createdAt ? new Date(message.createdAt).toISOString() : new Date().toISOString();
+
+    return {
+        id,
+        content: message.content || '',
+        status: message.status || 'sent',
+        createdAt,
+        deliveredAt: message.deliveredAt || null,
+        readAt: message.readAt || null,
+        sender: message.sender ? {
+            id: message.sender.id || message.sender._id || message.sender,
+            name: message.sender.name || '',
+            email: message.sender.email || ''
+        } : null
+    };
+}
+
+function normalizeChatMessagesList(messages) {
+    const normalized = [];
+    const indexById = new Map();
+
+    (messages || []).forEach(rawMessage => {
+        const message = normalizeChatMessage(rawMessage);
+        if (!message) {
+            return;
+        }
+
+        const messageId = getMessageId(message);
+        if (messageId && indexById.has(messageId)) {
+            normalized[indexById.get(messageId)] = message;
+        } else {
+            if (messageId) {
+                indexById.set(messageId, normalized.length);
+            }
+            normalized.push(message);
+        }
+    });
+
+    return normalized.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+function replaceChatMessages(chatId, messages) {
+    const normalized = normalizeChatMessagesList(messages);
+    chatMessages.set(chatId, normalized);
+}
+
+function upsertChatMessage(chatId, message) {
+    const normalizedMessage = normalizeChatMessage(message);
+    if (!normalizedMessage) {
+        return;
+    }
+
+    const existing = chatMessages.get(chatId) || [];
+    const messageId = getMessageId(normalizedMessage);
+
+    if (!messageId) {
+        chatMessages.set(chatId, normalizeChatMessagesList([...existing, normalizedMessage]));
+        return;
+    }
+
+    const index = existing.findIndex(item => getMessageId(item) === messageId);
+    if (index >= 0) {
+        existing[index] = normalizedMessage;
+        chatMessages.set(chatId, normalizeChatMessagesList(existing));
+    } else {
+        chatMessages.set(chatId, normalizeChatMessagesList([...existing, normalizedMessage]));
+    }
+}
+
+function removeChatMessage(chatId, messageId) {
+    if (!messageId) {
+        return;
+    }
+
+    const existing = chatMessages.get(chatId) || [];
+    const filtered = existing.filter(message => getMessageId(message) !== messageId);
+    chatMessages.set(chatId, filtered);
+}
 let chatPollingInterval = null;
 let currentDiscussionSessionId = null;
 let users = [
@@ -302,6 +391,18 @@ async function acknowledgeChatMessages(chatId, messageIds) {
     }
 
     const data = await apiRequest(`/chats/${chatId}/messages/ack`, {
+        method: 'PATCH',
+        body: JSON.stringify({ messageIds })
+    });
+    return data;
+}
+
+async function markChatMessagesRead(chatId, messageIds) {
+    if (!messageIds || messageIds.length === 0) {
+        return { updated: [] };
+    }
+
+    const data = await apiRequest(`/chats/${chatId}/messages/read`, {
         method: 'PATCH',
         body: JSON.stringify({ messageIds })
     });
@@ -944,12 +1045,13 @@ async function openChat(chatId) {
 async function loadChatMessages(chatId, { scroll = false } = {}) {
     try {
         const data = await getChatMessages(chatId);
-        const messages = data.messages || [];
-        chatMessages.set(chatId, messages);
+        const messages = (data.messages || []).map(normalizeChatMessage);
+        replaceChatMessages(chatId, messages);
         updateChatSummary(data.chat);
         renderChatMessages(chatId);
         renderChatList();
-        await markMessagesDelivered(chatId, messages);
+        await markMessagesDelivered(chatId);
+        await markMessagesRead(chatId);
         if (scroll) {
             scrollChatToBottom();
         }
@@ -978,7 +1080,7 @@ function renderChatMessages(chatId) {
         const statusMarkup = outgoing ? `<span class="chat-message-status">${status}</span>` : '';
 
         return `
-            <div class="chat-message ${outgoing ? 'outgoing' : 'incoming'}" data-message-id="${message.id}">
+            <div class="chat-message ${outgoing ? 'outgoing' : 'incoming'}" data-message-id="${message.id || message._id}">
                 <p class="chat-message-text">${escapeHtml(message.content)}</p>
                 <div class="chat-message-meta">
                     <span>${timestamp}</span>
@@ -1147,9 +1249,7 @@ async function handleChatMessageSubmit(event) {
         }
     };
 
-    const existingMessages = chatMessages.get(activeChatId) || [];
-    existingMessages.push(temporaryMessage);
-    chatMessages.set(activeChatId, existingMessages);
+    upsertChatMessage(activeChatId, temporaryMessage);
     renderChatMessages(activeChatId);
     scrollChatToBottom();
 
@@ -1162,21 +1262,8 @@ async function handleChatMessageSubmit(event) {
         const response = await sendChatMessageRequest(activeChatId, content);
         const savedMessage = response.message;
         updateChatSummary(response.chat);
-
-        const updatedMessages = chatMessages.get(activeChatId) || [];
-        const messageIndex = updatedMessages.findIndex(msg => msg.id === tempId);
-        const formattedMessage = {
-            ...savedMessage,
-            status: savedMessage.status || 'delivered'
-        };
-
-        if (messageIndex >= 0) {
-            updatedMessages[messageIndex] = formattedMessage;
-        } else {
-            updatedMessages.push(formattedMessage);
-        }
-
-        chatMessages.set(activeChatId, updatedMessages);
+        removeChatMessage(activeChatId, tempId);
+        upsertChatMessage(activeChatId, { ...savedMessage, status: savedMessage.status || 'sent' });
         renderChatMessages(activeChatId);
         renderChatList();
     } catch (error) {
@@ -1192,39 +1279,70 @@ async function handleChatMessageSubmit(event) {
     }
 }
 
-async function markMessagesDelivered(chatId, messages) {
-    if (!messages || messages.length === 0) {
-        return;
-    }
-
-    const undeliveredMessages = messages.filter(message => !isOutgoingMessage(message) && message.status !== 'delivered');
+async function markMessagesDelivered(chatId) {
+    const storedMessages = chatMessages.get(chatId) || [];
+    const undeliveredMessages = storedMessages.filter(message => !isOutgoingMessage(message) && message.status === 'sent');
     if (undeliveredMessages.length === 0) {
         return;
     }
 
     try {
-        const response = await acknowledgeChatMessages(chatId, undeliveredMessages.map(msg => msg.id));
+        const ids = Array.from(new Set(undeliveredMessages.map(msg => msg.id)));
+        const response = await acknowledgeChatMessages(chatId, ids);
         const updates = response.updated || [];
         if (updates.length > 0) {
-            const storedMessages = chatMessages.get(chatId) || [];
+            const refreshed = chatMessages.get(chatId) || [];
             updates.forEach(update => {
-                const target = storedMessages.find(msg => msg.id === update.id);
+                const target = refreshed.find(msg => msg.id === update.id);
                 if (target) {
                     target.status = update.status;
                     target.deliveredAt = update.deliveredAt;
+                    target.readAt = update.readAt || target.readAt;
                 }
             });
-            chatMessages.set(chatId, storedMessages);
+            chatMessages.set(chatId, normalizeChatMessagesList(refreshed));
             renderChatMessages(chatId);
-        }
-
-        const chat = chats.find(thread => (thread.id || thread._id) === chatId);
-        if (chat) {
-            chat.unreadCount = 0;
-            renderChatList();
         }
     } catch (error) {
         console.error('Failed to acknowledge messages:', error);
+    }
+}
+
+async function markMessagesRead(chatId) {
+    if (chatId !== activeChatId) {
+        return;
+    }
+
+    const storedMessages = chatMessages.get(chatId) || [];
+    const unreadMessages = storedMessages.filter(message => !isOutgoingMessage(message) && message.status !== 'read');
+    if (unreadMessages.length === 0) {
+        return;
+    }
+
+    try {
+        const ids = Array.from(new Set(unreadMessages.map(msg => msg.id)));
+        const response = await markChatMessagesRead(chatId, ids);
+        const updates = response.updated || [];
+        if (updates.length > 0) {
+            const refreshed = chatMessages.get(chatId) || [];
+            updates.forEach(update => {
+                const target = refreshed.find(msg => msg.id === update.id);
+                if (target) {
+                    target.status = update.status;
+                    target.deliveredAt = update.deliveredAt;
+                    target.readAt = update.readAt;
+                }
+            });
+            chatMessages.set(chatId, normalizeChatMessagesList(refreshed));
+            renderChatMessages(chatId);
+        }
+
+        if (response.chat) {
+            updateChatSummary(response.chat);
+            renderChatList();
+        }
+    } catch (error) {
+        console.error('Failed to mark messages as read:', error);
     }
 }
 

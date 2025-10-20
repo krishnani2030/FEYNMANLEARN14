@@ -20,6 +20,10 @@ const messageSchema = new mongoose.Schema({
     deliveredAt: {
         type: Date,
         default: null
+    },
+    readAt: {
+        type: Date,
+        default: null
     }
 }, {
     timestamps: true,
@@ -53,7 +57,9 @@ chatThreadSchema.methods.addMessage = function(senderId, content) {
     const message = {
         sender: senderId,
         content,
-        status: 'sent'
+        status: 'sent',
+        deliveredAt: null,
+        readAt: null
     };
 
     this.messages.push(message);
