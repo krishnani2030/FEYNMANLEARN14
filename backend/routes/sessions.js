@@ -1,11 +1,132 @@
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const Session = require('../models/Session');
-const User = require('../models/User');
 const { authMiddleware, optionalAuth } = require('../middleware/auth');
 const { hasGoogleMeetConfig, createMeetConference, updateMeetConference } = require('../services/googleMeetService');
+const { notifySessionEnrollment } = require('../services/notificationService');
 
 const router = express.Router();
+
+const JOIN_WINDOW_MINUTES = 15;
+
+function normalizeId(value) {
+    if (!value) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (value._id) {
+        return value._id.toString();
+    }
+
+    if (value.id) {
+        return value.id.toString();
+    }
+
+    if (typeof value === 'object' && typeof value.toString === 'function') {
+        return value.toString();
+    }
+
+    return null;
+}
+
+function isUserInParticipants(participants = [], userId) {
+    if (!userId) {
+        return false;
+    }
+
+    return participants.some(participant => {
+        if (!participant) {
+            return false;
+        }
+
+        if (participant.user) {
+            return normalizeId(participant.user) === userId;
+        }
+
+        return normalizeId(participant) === userId;
+    });
+}
+
+function checkIsCreator(creator, userId) {
+    if (!creator || !userId) {
+        return false;
+    }
+
+    return normalizeId(creator) === userId;
+}
+
+function computeJoinAvailability(sessionObj) {
+    const defaults = {
+        canJoinNow: false,
+        joinOpensAt: null,
+        joinClosesAt: null,
+        joinWindowMinutes: JOIN_WINDOW_MINUTES
+    };
+
+    if (!sessionObj || !sessionObj.date || !sessionObj.meetLink) {
+        return defaults;
+    }
+
+    const start = new Date(sessionObj.date);
+    if (Number.isNaN(start.getTime())) {
+        return defaults;
+    }
+
+    const durationMinutes = Number(sessionObj.duration) || 60;
+    const joinOpensAt = new Date(start.getTime() - JOIN_WINDOW_MINUTES * 60000);
+    const joinClosesAt = new Date(start.getTime() + Math.max(durationMinutes, JOIN_WINDOW_MINUTES) * 60000);
+    const now = new Date();
+
+    let canJoinNow = false;
+    if (sessionObj.status === 'ongoing' && now <= joinClosesAt) {
+        canJoinNow = true;
+    } else if (sessionObj.status !== 'completed' && now >= joinOpensAt && now <= joinClosesAt) {
+        canJoinNow = true;
+    }
+
+    return {
+        canJoinNow,
+        joinOpensAt: joinOpensAt.toISOString(),
+        joinClosesAt: joinClosesAt.toISOString(),
+        joinWindowMinutes: JOIN_WINDOW_MINUTES
+    };
+}
+
+function formatSessionResponse(session, currentUser = null) {
+    if (!session) {
+        return null;
+    }
+
+    const sessionObj = session.toObject ? session.toObject({ virtuals: true }) : { ...session };
+
+    if (sessionObj._id && !sessionObj.id) {
+        sessionObj.id = sessionObj._id.toString();
+    }
+
+    const joinInfo = computeJoinAvailability(sessionObj);
+
+    if (currentUser && currentUser._id) {
+        const userId = currentUser._id.toString();
+
+        if (typeof session.isUserEnrolled === 'function') {
+            sessionObj.isEnrolled = session.isUserEnrolled(currentUser._id);
+        } else {
+            sessionObj.isEnrolled = isUserInParticipants(sessionObj.participants, userId);
+        }
+
+        if (typeof session.isCreator === 'function') {
+            sessionObj.isCreator = session.isCreator(currentUser._id);
+        } else {
+            sessionObj.isCreator = checkIsCreator(sessionObj.creator, userId);
+        }
+    }
+
+    return Object.assign({}, sessionObj, joinInfo);
+}
 
 // Get all sessions
 router.get('/', optionalAuth, async (req, res) => {
@@ -24,14 +145,7 @@ router.get('/', optionalAuth, async (req, res) => {
             .skip(skip)
             .limit(parseInt(limit));
 
-        const sessionsWithStatus = sessions.map(session => {
-            const sessionObj = session.toObject();
-            if (req.user) {
-                sessionObj.isEnrolled = session.isUserEnrolled(req.user._id);
-                sessionObj.isCreator = session.isCreator(req.user._id);
-            }
-            return sessionObj;
-        });
+        const sessionsWithStatus = sessions.map(session => formatSessionResponse(session, req.user));
 
         res.json({ sessions: sessionsWithStatus });
 
@@ -115,7 +229,9 @@ router.post('/', authMiddleware, [
         await session.save();
         await session.populate('creator', 'name email');
 
-        res.status(201).json({ message: 'Session created successfully', session });
+        const responseSession = formatSessionResponse(session, req.user);
+
+        res.status(201).json({ message: 'Session created successfully', session: responseSession });
 
     } catch (error) {
         console.error('Create session error:', error);
@@ -137,8 +253,9 @@ router.post('/:id/enroll', authMiddleware, async (req, res) => {
 
         if (session.isUserEnrolled(req.user._id)) {
             await session.populate('creator', 'name email');
-            await session.populate('participants.user', 'name');
-            return res.json({ message: 'Already enrolled in session', session });
+            await session.populate('participants.user', 'name email');
+            const alreadyEnrolledSession = formatSessionResponse(session, req.user);
+            return res.json({ message: 'Already enrolled in session', session: alreadyEnrolledSession });
         }
 
         // Add debugging
@@ -155,9 +272,13 @@ router.post('/:id/enroll', authMiddleware, async (req, res) => {
 
         await session.enrollUser(req.user._id);
         await session.populate('creator', 'name email');
-        await session.populate('participants.user', 'name');
+        await session.populate('participants.user', 'name email');
 
-        res.json({ message: 'Successfully enrolled in session', session });
+        const responseSession = formatSessionResponse(session, req.user);
+
+        await notifySessionEnrollment(session, req.user);
+
+        res.json({ message: 'Successfully enrolled in session', session: responseSession });
 
     } catch (error) {
         console.error('Enrollment error:', error.message);
@@ -282,7 +403,9 @@ router.put('/:id', authMiddleware, [
         await session.save();
         await session.populate('creator', 'name email');
 
-        res.json({ message: 'Session updated successfully', session });
+        const responseSession = formatSessionResponse(session, req.user);
+
+        res.json({ message: 'Session updated successfully', session: responseSession });
 
     } catch (error) {
         console.error('Update session error:', error);
@@ -321,7 +444,9 @@ router.get('/mine', authMiddleware, async (req, res) => {
             .populate('participants.user', 'name email')
             .sort({ createdAt: -1 });
 
-        res.json({ sessions });
+        const formatted = sessions.map(session => formatSessionResponse(session, req.user));
+
+        res.json({ sessions: formatted });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch your sessions' });
     }

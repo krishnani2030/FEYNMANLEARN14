@@ -14,6 +14,175 @@ let activeNoteId = null;
 let chatUserSearchTimeout = null;
 let isNewChatPanelVisible = false;
 
+const SESSION_JOIN_WINDOW_MINUTES = 15;
+
+function normalizeIdentifier(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (typeof value === 'object') {
+        if (value._id) {
+            return value._id.toString();
+        }
+        if (value.id) {
+            return value.id.toString();
+        }
+        if (typeof value.toString === 'function') {
+            return value.toString();
+        }
+    }
+
+    return null;
+}
+
+function calculateJoinWindow(session) {
+    if (!session || !session.date) {
+        return { joinOpensAt: null, joinClosesAt: null };
+    }
+
+    const start = new Date(session.date);
+    if (Number.isNaN(start.getTime())) {
+        return { joinOpensAt: null, joinClosesAt: null };
+    }
+
+    const durationMinutes = Number(session.duration) || 60;
+    const opens = new Date(start.getTime() - SESSION_JOIN_WINDOW_MINUTES * 60000);
+    const closes = new Date(start.getTime() + Math.max(durationMinutes, SESSION_JOIN_WINDOW_MINUTES) * 60000);
+
+    return {
+        joinOpensAt: opens.toISOString(),
+        joinClosesAt: closes.toISOString()
+    };
+}
+
+function ensureJoinMetadata(session) {
+    if (!session) {
+        return session;
+    }
+
+    if (!session.joinWindowMinutes) {
+        session.joinWindowMinutes = SESSION_JOIN_WINDOW_MINUTES;
+    }
+
+    if (!session.joinOpensAt || !session.joinClosesAt) {
+        const { joinOpensAt, joinClosesAt } = calculateJoinWindow(session);
+        if (!session.joinOpensAt) {
+            session.joinOpensAt = joinOpensAt;
+        }
+        if (!session.joinClosesAt) {
+            session.joinClosesAt = joinClosesAt;
+        }
+    }
+
+    return session;
+}
+
+function computeJoinAvailabilityState(session) {
+    if (!session) {
+        return { session, canJoinNow: false };
+    }
+
+    ensureJoinMetadata(session);
+
+    if (!session.meetLink) {
+        session.canJoinNow = false;
+        return { session, canJoinNow: false };
+    }
+
+    const now = new Date();
+    const joinOpens = session.joinOpensAt ? new Date(session.joinOpensAt) : null;
+    const joinCloses = session.joinClosesAt ? new Date(session.joinClosesAt) : null;
+
+    let canJoin = Boolean(session.canJoinNow);
+
+    if (session.status === 'completed') {
+        canJoin = false;
+    } else if (session.status === 'ongoing' && joinCloses && !Number.isNaN(joinCloses.getTime())) {
+        canJoin = now <= joinCloses;
+    } else if (
+        joinOpens && !Number.isNaN(joinOpens.getTime()) &&
+        joinCloses && !Number.isNaN(joinCloses.getTime())
+    ) {
+        canJoin = now >= joinOpens && now <= joinCloses;
+    } else {
+        const { joinOpensAt, joinClosesAt } = calculateJoinWindow(session);
+        if (joinOpensAt && joinClosesAt) {
+            session.joinOpensAt = joinOpensAt;
+            session.joinClosesAt = joinClosesAt;
+            const computedOpen = new Date(joinOpensAt);
+            const computedClose = new Date(joinClosesAt);
+            canJoin = now >= computedOpen && now <= computedClose;
+        }
+    }
+
+    session.canJoinNow = canJoin;
+    return { session, canJoinNow: canJoin };
+}
+
+function withJoinMetadata(session) {
+    if (!session) {
+        return session;
+    }
+
+    const enriched = { ...session };
+    ensureJoinMetadata(enriched);
+    const { canJoinNow } = computeJoinAvailabilityState(enriched);
+    enriched.canJoinNow = canJoinNow;
+    return enriched;
+}
+
+function applyJoinMetadataToList(list) {
+    return (list || []).map(item => withJoinMetadata(item));
+}
+
+function sessionCanJoinNow(session) {
+    if (!session) {
+        return false;
+    }
+
+    const { canJoinNow } = computeJoinAvailabilityState(session);
+    return canJoinNow;
+}
+
+function getSessionJoinTimes(session) {
+    if (!session) {
+        return { joinOpensAt: null, joinClosesAt: null };
+    }
+
+    ensureJoinMetadata(session);
+
+    const joinOpens = session.joinOpensAt ? new Date(session.joinOpensAt) : null;
+    const joinCloses = session.joinClosesAt ? new Date(session.joinClosesAt) : null;
+
+    return { joinOpensAt: joinOpens, joinClosesAt: joinCloses };
+}
+
+function sessionIncludesUser(session, userId) {
+    if (!session || !userId) {
+        return false;
+    }
+
+    const normalizedTarget = userId.toString();
+    const participants = Array.isArray(session.participants) ? session.participants : [];
+
+    return participants.some(participant => {
+        if (!participant) {
+            return false;
+        }
+
+        if (participant.user) {
+            return normalizeIdentifier(participant.user) === normalizedTarget;
+        }
+
+        return normalizeIdentifier(participant) === normalizedTarget;
+    });
+}
+
 function getMessageId(message) {
     return message?.id || message?._id || null;
 }
@@ -450,7 +619,7 @@ async function getCurrentUser() {
 async function getSessions() {
     try {
         const data = await apiRequest('/sessions');
-        sessions = data.sessions || [];
+        sessions = applyJoinMetadataToList(data.sessions || []);
         return sessions;
     } catch (error) {
         console.error('Failed to fetch sessions:', error);
@@ -462,7 +631,7 @@ async function getSessions() {
 async function getUserSessions() {
     try {
         const data = await apiRequest('/sessions/mine');
-        return data.sessions || [];
+        return applyJoinMetadataToList(data.sessions || []);
     } catch (error) {
         console.error('Failed to fetch user sessions:', error);
         return [];
@@ -487,7 +656,7 @@ async function createSession(sessionData) {
             })
         });
 
-        return data.session;
+        return withJoinMetadata(data.session);
     } catch (error) {
         // If backend is not available, create mock session
         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
@@ -508,8 +677,9 @@ async function createSession(sessionData) {
             };
             
             // Add to local sessions array
-            sessions.push(mockSession);
-            return mockSession;
+            const annotated = withJoinMetadata(mockSession);
+            sessions.push(annotated);
+            return annotated;
         }
         throw error;
     }
@@ -533,14 +703,14 @@ async function updateSession(sessionId, sessionData) {
             })
         });
 
-        return data.session;
+        return withJoinMetadata(data.session);
     } catch (error) {
         // If backend is not available, update mock session
         if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
             console.log('Backend not available, updating mock session');
             const sessionIndex = sessions.findIndex(s => (s.id === sessionId || s._id === sessionId));
             if (sessionIndex !== -1) {
-                sessions[sessionIndex] = {
+                sessions[sessionIndex] = withJoinMetadata({
                     ...sessions[sessionIndex],
                     topic: sessionData.topic,
                     level: sessionData.level,
@@ -548,7 +718,7 @@ async function updateSession(sessionId, sessionData) {
                     time: sessionData.time,
                     maxParticipants: parseInt(sessionData.maxParticipants),
                     meetLink: sessionData.meetLink || ''
-                };
+                });
                 return sessions[sessionIndex];
             }
         }
@@ -581,7 +751,7 @@ async function enrollInSession(sessionId) {
         const data = await apiRequest(`/sessions/${sessionId}/enroll`, {
             method: 'POST'
         });
-        return data.session;
+        return withJoinMetadata(data.session);
     } catch (error) {
         throw error;
     }
@@ -1391,6 +1561,21 @@ async function handleEnrollInSession(sessionId) {
     } catch (error) {
         console.error('Enrollment error:', error);
         showAlert('Failed to enroll: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+function handleSessionJoinClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const target = event.currentTarget;
+    if (!target) {
+        return;
+    }
+
+    const meetLink = target.getAttribute('data-meet-link');
+    if (meetLink) {
+        window.open(meetLink, '_blank');
     }
 }
 
@@ -2686,51 +2871,71 @@ function displaySessions(sessionsList, container, isOwner = false) {
     }
 
     container.innerHTML = sessionsList.map(session => {
-        const isEnrolled = session.participants && session.participants.some(p => {
-            if (typeof p === 'string') {
-                return p === currentUser?.id || p === currentUser?._id;
-            } else if (p.user) {
-                return p.user === currentUser?.id || p.user === currentUser?._id || 
-                       p.user.toString() === currentUser?.id || p.user.toString() === currentUser?._id;
-            }
-            return false;
-        });
-        
-        const isCreator = session.creatorId === currentUser?.id || 
-                         session.creator?.id === currentUser?.id || 
-                         session.creator?._id === currentUser?.id ||
-                         (session.creator && session.creator.toString() === currentUser?.id);
+        const currentUserId = getCurrentUserId();
+        const isEnrolled = currentUserId ? sessionIncludesUser(session, currentUserId) : false;
+        const creatorIdentifier = normalizeIdentifier(session.creatorId || session.creator);
+        const isCreator = currentUserId && creatorIdentifier
+            ? creatorIdentifier.toString() === currentUserId.toString()
+            : false;
 
-        // Debug logging for enrollment
+        const isFull = Array.isArray(session.participants) && session.participants.length >= session.maxParticipants;
+        const joinAvailable = sessionCanJoinNow(session);
+        const hasMeetLink = Boolean(session.meetLink);
+        const canJoin = joinAvailable && hasMeetLink && (isCreator || isEnrolled);
+
         console.log('Session enrollment check:', {
             topic: session.topic,
             sessionId: session.id || session._id,
             participants: session.participants,
-            currentUserId: currentUser?.id,
-            isEnrolled: isEnrolled,
-            isCreator: isCreator
+            currentUserId,
+            isEnrolled,
+            isCreator,
+            canJoin
         });
-        const isFull = session.participants && session.participants.length >= session.maxParticipants;
-
-        let actionButton = '';
-        if (isCreator) {
-            actionButton = `<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`;
-        } else if (isEnrolled) {
-            actionButton = '<button class="btn btn--enrolled btn--sm" disabled>Enrolled</button>';
-        } else if (isFull) {
-            actionButton = '<button class="btn btn--full btn--sm" disabled>Full</button>';
-        } else if (session.meetLink && session.status === 'ongoing') {
-            actionButton = `<button class="btn btn--primary btn--sm" onclick="window.open('${session.meetLink}', '_blank')">Join Now</button>`;
-        } else {
-            actionButton = `<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`;
-        }
 
         const detailsButton = `<button class="btn btn--secondary btn--sm" onclick="openSessionDetails('${session.id || session._id}')">Details</button>`;
+        const actions = [detailsButton];
+
+        if (canJoin) {
+            const meetLinkValue = escapeHtml(session.meetLink || '');
+            actions.push(`<button class="btn btn--primary btn--sm" type="button" data-meet-link="${meetLinkValue}" onclick="handleSessionJoinClick(event)">Join Now</button>`);
+        }
+
+        if (isCreator) {
+            actions.push(`<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`);
+        } else if (!canJoin) {
+            if (isEnrolled) {
+                actions.push('<button class="btn btn--enrolled btn--sm" disabled>Enrolled</button>');
+            } else if (isFull) {
+                actions.push('<button class="btn btn--full btn--sm" disabled>Full</button>');
+            } else {
+                actions.push(`<button class="btn btn--primary btn--sm" onclick="handleEnrollInSession('${session.id || session._id}')">Enroll</button>`);
+            }
+        }
+
+        const actionButtons = actions.join('');
+
+        let joinNote = '';
+        if (hasMeetLink && (isCreator || isEnrolled)) {
+            const { joinOpensAt } = getSessionJoinTimes(session);
+            if (joinAvailable) {
+                joinNote = '<p class="session-join-note">You can join this session now.</p>';
+            } else if (joinOpensAt && !Number.isNaN(joinOpensAt.getTime())) {
+                const sessionDateObj = new Date(session.date);
+                const sameDay = !Number.isNaN(sessionDateObj.getTime()) && sessionDateObj.toDateString() === joinOpensAt.toDateString();
+                const joinTimeLabel = escapeHtml(joinOpensAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+                const joinDateLabelRaw = joinOpensAt.toLocaleDateString();
+                const joinDateLabel = sameDay ? '' : `${escapeHtml(joinDateLabelRaw)} `;
+                joinNote = `<p class="session-join-note">Join opens ${joinDateLabel}${joinTimeLabel} (${SESSION_JOIN_WINDOW_MINUTES} min before start).</p>`;
+            } else {
+                joinNote = `<p class="session-join-note">Join link unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
+            }
+        }
 
         // Convert backend level format to display format
-        const displayLevel = session.level === 'high_school' ? 'High School' : 
+        const displayLevel = session.level === 'high_school' ? 'High School' :
                            session.level === 'college' ? 'College' : session.level;
-        
+
         return `
             <div class="session-card ${isCreator ? 'session-card--own' : ''}">
                 <div class="session-header">
@@ -2747,9 +2952,9 @@ function displaySessions(sessionsList, container, isOwner = false) {
                     <p><strong>Participants:</strong> ${session.participants?.length || 0}/${session.maxParticipants}</p>
                 </div>
                 <div class="session-actions">
-                    ${detailsButton}
-                    ${actionButton}
+                    ${actionButtons}
                 </div>
+                ${joinNote}
             </div>
         `;
     }).join('');
@@ -2771,9 +2976,42 @@ function openSessionDetails(sessionId) {
     const creatorName = session.creatorName || session.creator?.name || 'Unknown instructor';
     const sessionDate = formatDate(session.date);
     const sessionTime = session.time || formatTime(session.date);
-    const creatorId = session.creatorId || session.creator?._id || (typeof session.creator === 'string' ? session.creator : null);
-    const currentUserId = currentUser?.id || currentUser?._id;
-    const canMessageInstructor = creatorId && (!currentUserId || creatorId.toString() !== currentUserId.toString());
+    const creatorIdentifier = normalizeIdentifier(session.creatorId || session.creator?._id || session.creator);
+    const currentUserIdValue = getCurrentUserId();
+    const normalizedCurrentUser = currentUserIdValue ? currentUserIdValue.toString() : null;
+    const isCreator = normalizedCurrentUser && creatorIdentifier ? creatorIdentifier === normalizedCurrentUser : false;
+    const isEnrolled = normalizedCurrentUser ? sessionIncludesUser(session, normalizedCurrentUser) : false;
+    const joinAvailable = sessionCanJoinNow(session);
+    const hasMeetLink = Boolean(session.meetLink);
+    const canJoinSession = joinAvailable && hasMeetLink && (isCreator || isEnrolled);
+    const { joinOpensAt } = getSessionJoinTimes(session);
+    const canMessageInstructor = creatorIdentifier && (!normalizedCurrentUser || creatorIdentifier !== normalizedCurrentUser);
+
+    let joinNoteMarkup = '';
+    if (hasMeetLink && (isCreator || isEnrolled)) {
+        if (canJoinSession) {
+            joinNoteMarkup = '<p class="session-join-note">You can join this session now.</p>';
+        } else if (joinOpensAt && !Number.isNaN(joinOpensAt.getTime())) {
+            const sessionDateObj = new Date(session.date);
+            const sameDay = !Number.isNaN(sessionDateObj.getTime()) && sessionDateObj.toDateString() === joinOpensAt.toDateString();
+            const joinTimeLabel = escapeHtml(joinOpensAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+            const joinDateLabelRaw = joinOpensAt.toLocaleDateString();
+            const joinDateLabel = sameDay ? '' : `${escapeHtml(joinDateLabelRaw)} `;
+            joinNoteMarkup = `<p class="session-join-note">Join opens ${joinDateLabel}${joinTimeLabel} (${SESSION_JOIN_WINDOW_MINUTES} min before start).</p>`;
+        } else {
+            joinNoteMarkup = `<p class="session-join-note">Join link unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
+        }
+    }
+
+    const meetLinkMarkup = hasMeetLink
+        ? (canJoinSession
+            ? `<p><strong>Meet Link:</strong> <a href="${escapeHtml(session.meetLink)}" target="_blank" rel="noopener noreferrer">Join call</a></p>`
+            : `<p><strong>Meet Link:</strong> Available ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`)
+        : '';
+
+    const joinButtonMarkup = canJoinSession
+        ? `<button class="btn btn--primary btn--sm" type="button" data-meet-link="${escapeHtml(session.meetLink)}" onclick="handleSessionJoinClick(event)">Join Now</button>`
+        : '';
 
     modalDetails.innerHTML = `
         <div class="session-details-overview">
@@ -2783,6 +3021,9 @@ function openSessionDetails(sessionId) {
             <p><strong>Date:</strong> ${escapeHtml(sessionDate)}</p>
             <p><strong>Time:</strong> ${escapeHtml(sessionTime)}</p>
             <p><strong>Participants:</strong> ${(session.participants?.length || 0)} / ${session.maxParticipants}</p>
+            ${meetLinkMarkup}
+            ${joinNoteMarkup}
+            ${joinButtonMarkup}
             ${canMessageInstructor ? '<button class="btn btn--secondary btn--sm" id="session-message-host">Message instructor</button>' : ''}
         </div>
     `;

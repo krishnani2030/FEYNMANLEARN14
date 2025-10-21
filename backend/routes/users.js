@@ -9,7 +9,10 @@ const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 router.get('/', authMiddleware, async (req, res) => {
     try {
         const search = (req.query.search || '').trim();
-        const query = { _id: { $ne: req.user._id } };
+        const query = {
+            _id: { $ne: req.user._id },
+            isSystem: { $ne: true }
+        };
 
         if (search) {
             const pattern = new RegExp(escapeRegex(search), 'i');

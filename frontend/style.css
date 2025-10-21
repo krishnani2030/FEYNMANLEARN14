@@ -1735,6 +1735,12 @@ a:hover {
   box-shadow: var(--shadow-md), 0 0 0 1px rgba(var(--color-teal-500-rgb), 0.1);
 }
 
+.session-join-note {
+  margin-top: var(--space-12);
+  font-size: var(--font-size-sm);
+  color: var(--color-gray-600);
+}
+
 .session-owner-badge {
   background: var(--color-primary);
   color: var(--color-white);
