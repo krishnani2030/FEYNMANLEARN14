@@ -66,24 +66,28 @@ router.post('/', [
 
         const participantId = req.body.participantId;
 
-        if (participantId === req.user._id.toString()) {
+        const participantObjectId = new mongoose.Types.ObjectId(participantId);
+        const currentUserId = req.user._id;
+        const participantIds = [currentUserId, participantObjectId];
+
+        if (participantObjectId.toString() === currentUserId.toString()) {
             return res.status(400).json({ error: 'Cannot start a chat with yourself' });
         }
 
-        const participant = await User.findById(participantId).select('name email');
+        const participant = await User.findById(participantObjectId).select('name email');
         if (!participant) {
             return res.status(404).json({ error: 'Participant not found' });
         }
 
         let chat = await ChatThread.findOne({
-            participants: { $all: [req.user._id, participantId] },
-            $expr: { $eq: [{ $size: '$participants' }, 2] }
+            participants: { $all: participantIds },
+            'participants.2': { $exists: false }
         })
             .populate('participants', 'name email');
 
         if (!chat) {
             chat = new ChatThread({
-                participants: [req.user._id, participantId],
+                participants: participantIds,
                 messages: [],
                 lastMessageAt: new Date()
             });

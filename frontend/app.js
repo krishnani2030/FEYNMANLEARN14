@@ -18,32 +18,135 @@ function getMessageId(message) {
     return message?.id || message?._id || null;
 }
 
+const MESSAGE_STATUS_PRIORITY = {
+    error: 0,
+    sending: 1,
+    sent: 2,
+    delivered: 3,
+    read: 4
+};
+
+function toISOStringSafe(value, fallback = null) {
+    if (!value) {
+        return fallback;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return fallback;
+    }
+
+    return date.toISOString();
+}
+
+function getMessageStatusRank(status) {
+    if (!status) {
+        return MESSAGE_STATUS_PRIORITY.sent;
+    }
+
+    return MESSAGE_STATUS_PRIORITY[status] ?? MESSAGE_STATUS_PRIORITY.sent;
+}
+
+function choosePreferredMessage(existing, candidate) {
+    if (!existing) {
+        return candidate;
+    }
+    if (!candidate) {
+        return existing;
+    }
+
+    const existingRank = getMessageStatusRank(existing.status);
+    const candidateRank = getMessageStatusRank(candidate.status);
+
+    if (candidateRank > existingRank) {
+        return candidate;
+    }
+    if (candidateRank < existingRank) {
+        return existing;
+    }
+
+    if (!existing.id && candidate.id) {
+        return candidate;
+    }
+
+    if (candidate.readAt && !existing.readAt) {
+        return candidate;
+    }
+
+    if (candidate.deliveredAt && !existing.deliveredAt) {
+        return candidate;
+    }
+
+    if (!existing.createdAt && candidate.createdAt) {
+        return candidate;
+    }
+
+    return existing;
+}
+
 function normalizeChatMessage(message) {
     if (!message) {
         return null;
     }
 
-    const id = getMessageId(message);
-    const createdAt = message.createdAt ? new Date(message.createdAt).toISOString() : new Date().toISOString();
+    const messageId = getMessageId(message);
+    const createdAtIso = toISOStringSafe(message.createdAt, toISOStringSafe(message.updatedAt, new Date().toISOString()));
+    const deliveredAtIso = toISOStringSafe(message.deliveredAt, null);
+    const readAtIso = toISOStringSafe(message.readAt, null);
+
+    const senderRaw = message.sender || null;
+    let senderId = null;
+    let senderName = '';
+    let senderEmail = '';
+
+    if (senderRaw && typeof senderRaw === 'object') {
+        senderId = senderRaw.id || senderRaw._id || senderRaw.user || null;
+        senderName = senderRaw.name || '';
+        senderEmail = senderRaw.email || '';
+    } else if (senderRaw) {
+        senderId = senderRaw;
+    }
+
+    if (senderId && typeof senderId === 'object' && typeof senderId.toString === 'function') {
+        senderId = senderId.toString();
+    }
+
+    const normalizedStatus = message.status && MESSAGE_STATUS_PRIORITY.hasOwnProperty(message.status)
+        ? message.status
+        : (message.status === 'sending' ? 'sending' : 'sent');
 
     return {
-        id,
+        id: messageId,
         content: message.content || '',
-        status: message.status || 'sent',
-        createdAt,
-        deliveredAt: message.deliveredAt || null,
-        readAt: message.readAt || null,
-        sender: message.sender ? {
-            id: message.sender.id || message.sender._id || message.sender,
-            name: message.sender.name || '',
-            email: message.sender.email || ''
+        status: normalizedStatus,
+        createdAt: createdAtIso,
+        deliveredAt: deliveredAtIso,
+        readAt: readAtIso,
+        sender: senderId ? {
+            id: senderId,
+            name: senderName,
+            email: senderEmail
         } : null
     };
+}
+
+function createCompositeMessageKey(message) {
+    if (!message) {
+        return null;
+    }
+
+    const senderId = message.sender?.id || null;
+    if (!senderId || !message.createdAt || typeof message.content !== 'string') {
+        return null;
+    }
+
+    return `${senderId}|${message.createdAt}|${message.content}`;
 }
 
 function normalizeChatMessagesList(messages) {
     const normalized = [];
     const indexById = new Map();
+    const indexByComposite = new Map();
 
     (messages || []).forEach(rawMessage => {
         const message = normalizeChatMessage(rawMessage);
@@ -52,11 +155,28 @@ function normalizeChatMessagesList(messages) {
         }
 
         const messageId = getMessageId(message);
-        if (messageId && indexById.has(messageId)) {
-            normalized[indexById.get(messageId)] = message;
-        } else {
-            if (messageId) {
+        if (messageId) {
+            if (indexById.has(messageId)) {
+                const existingIndex = indexById.get(messageId);
+                normalized[existingIndex] = choosePreferredMessage(normalized[existingIndex], message);
+            } else {
                 indexById.set(messageId, normalized.length);
+                const compositeKey = createCompositeMessageKey(message);
+                if (compositeKey) {
+                    indexByComposite.set(compositeKey, normalized.length);
+                }
+                normalized.push(message);
+            }
+            return;
+        }
+
+        const compositeKey = createCompositeMessageKey(message);
+        if (compositeKey && indexByComposite.has(compositeKey)) {
+            const existingIndex = indexByComposite.get(compositeKey);
+            normalized[existingIndex] = choosePreferredMessage(normalized[existingIndex], message);
+        } else {
+            if (compositeKey) {
+                indexByComposite.set(compositeKey, normalized.length);
             }
             normalized.push(message);
         }
@@ -128,17 +248,36 @@ let users = [
 // API Helper Functions
 async function apiRequest(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
+    const isFormData = options.body instanceof FormData;
+
+    const providedHeaders = options.headers && typeof options.headers === 'object'
+        ? options.headers
+        : {};
+
+    const headers = {
+        ...providedHeaders
+    };
+
+    if (!isFormData && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+    }
+
     const config = {
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        },
-        credentials: 'include', // Important for cookies
-        ...options
+        ...options,
+        headers,
+        credentials: 'include' // Important for cookies
     };
 
     try {
-        console.log(`Making API request to: ${url}`, { method: config.method || 'GET', body: config.body });
+        if (!isFormData) {
+            let loggedBody = config.body;
+            if (typeof config.body === 'string' && config.body.length > 500) {
+                loggedBody = '[body omitted]';
+            }
+            console.log(`Making API request to: ${url}`, { method: config.method || 'GET', body: loggedBody });
+        } else {
+            console.log(`Making API request to: ${url}`, { method: config.method || 'GET', body: '[FormData]' });
+        }
         const response = await fetch(url, config);
         const data = await response.json();
         
@@ -424,6 +563,196 @@ async function markChatMessagesRead(chatId, messageIds) {
     return data;
 }
 
+// Notes API Functions
+const NOTE_ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain'
+]);
+const NOTE_ATTACHMENT_ALLOWED_EXTENSIONS = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt'];
+const MAX_NOTE_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+const MAX_NOTE_ATTACHMENTS_PER_UPLOAD = 10;
+
+function getFileExtension(name) {
+    if (typeof name !== 'string') {
+        return '';
+    }
+
+    const parts = name.split('.');
+    if (parts.length < 2) {
+        return '';
+    }
+
+    return parts.pop().toLowerCase();
+}
+
+function isSupportedNoteAttachment(file) {
+    if (!file) {
+        return false;
+    }
+
+    const extension = getFileExtension(file.name);
+    const mimeType = (file.type || '').toLowerCase();
+
+    return NOTE_ATTACHMENT_ALLOWED_EXTENSIONS.includes(extension) || NOTE_ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType);
+}
+
+function validateNoteAttachmentFile(file) {
+    if (!isSupportedNoteAttachment(file)) {
+        throw new Error('Unsupported file type. Upload PDF, Word, Excel, or PowerPoint documents.');
+    }
+
+    if (typeof file.size === 'number' && file.size > MAX_NOTE_ATTACHMENT_BYTES) {
+        throw new Error('Files must be 15 MB or smaller.');
+    }
+}
+
+function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (typeof reader.result === 'string') {
+                resolve(reader.result);
+            } else {
+                reject(new Error('Unable to read file.'));
+            }
+        };
+        reader.onerror = () => {
+            reject(reader.error || new Error('Unable to read file.'));
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+async function buildNoteAttachmentPayload(file) {
+    validateNoteAttachmentFile(file);
+    const dataUrl = await readFileAsBase64(file);
+    return {
+        name: file.name,
+        mimeType: file.type || '',
+        content: dataUrl
+    };
+}
+
+async function prepareNoteAttachments(files) {
+    const fileArray = Array.from(files || []);
+
+    if (fileArray.length === 0) {
+        return [];
+    }
+
+    if (fileArray.length > MAX_NOTE_ATTACHMENTS_PER_UPLOAD) {
+        throw new Error(`You can upload up to ${MAX_NOTE_ATTACHMENTS_PER_UPLOAD} files at a time.`);
+    }
+
+    const payloads = [];
+    for (const file of fileArray) {
+        const payload = await buildNoteAttachmentPayload(file);
+        payloads.push(payload);
+    }
+
+    return payloads;
+}
+
+async function fetchNotesCollection() {
+    if (!currentUser) {
+        return [];
+    }
+
+    const data = await apiRequest('/notes');
+    return Array.isArray(data.notes) ? data.notes.map(normalizeNote).filter(Boolean) : [];
+}
+
+async function createNoteRequest({ title, content, files } = {}) {
+    if (!currentUser) {
+        throw new Error('You must be logged in to create a note.');
+    }
+
+    const payload = {
+        title: title || 'Untitled note',
+        content: content || ''
+    };
+
+    if (Array.isArray(files) && files.length > 0) {
+        payload.attachments = await prepareNoteAttachments(files);
+    }
+
+    const response = await apiRequest('/notes', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    });
+
+    return response.note ? normalizeNote(response.note) : null;
+}
+
+async function updateNoteRequest(noteId, { title, content } = {}) {
+    if (!noteId) {
+        throw new Error('Note id is required');
+    }
+
+    const payload = {};
+
+    if (typeof title === 'string') {
+        payload.title = title;
+    }
+
+    if (typeof content === 'string') {
+        payload.content = content;
+    }
+
+    const response = await apiRequest(`/notes/${noteId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+    });
+
+    return response.note ? normalizeNote(response.note) : null;
+}
+
+async function uploadNoteAttachments(noteId, files) {
+    if (!noteId) {
+        throw new Error('Note id is required');
+    }
+
+    const attachments = await prepareNoteAttachments(files);
+    if (attachments.length === 0) {
+        return null;
+    }
+
+    const response = await apiRequest(`/notes/${noteId}/attachments`, {
+        method: 'POST',
+        body: JSON.stringify({ attachments })
+    });
+
+    return response.note ? normalizeNote(response.note) : null;
+}
+
+async function deleteNoteAttachmentRequest(noteId, attachmentId) {
+    if (!noteId || !attachmentId) {
+        throw new Error('Note and attachment ids are required');
+    }
+
+    const response = await apiRequest(`/notes/${noteId}/attachments/${attachmentId}`, {
+        method: 'DELETE'
+    });
+
+    return response.note ? normalizeNote(response.note) : null;
+}
+
+async function deleteNoteRequest(noteId) {
+    if (!noteId) {
+        throw new Error('Note id is required');
+    }
+
+    return apiRequest(`/notes/${noteId}`, {
+        method: 'DELETE'
+    });
+}
+
 async function getSessionDiscussionMessages(sessionId) {
     const data = await apiRequest(`/sessions/${sessionId}/discussion`);
     return data.discussion || [];
@@ -634,6 +963,21 @@ function initializeNotesUI() {
     if (deleteButton) {
         deleteButton.addEventListener('click', handleDeleteNote);
     }
+
+    const uploadButton = document.getElementById('note-attachment-upload');
+    if (uploadButton) {
+        uploadButton.addEventListener('click', handleNoteAttachmentUploadClick);
+    }
+
+    const attachmentInput = document.getElementById('note-attachment-input');
+    if (attachmentInput) {
+        attachmentInput.addEventListener('change', handleNoteAttachmentInputChange);
+    }
+
+    const attachmentsList = document.getElementById('note-attachments-list');
+    if (attachmentsList) {
+        attachmentsList.addEventListener('click', handleNoteAttachmentListClick);
+    }
 }
 
 // Rest of the original JavaScript code follows...
@@ -668,7 +1012,7 @@ function showDashboard() {
     currentView = 'dashboard';
     updateDashboard();
     if (currentUser) {
-        loadNotesForCurrentUser();
+        loadSharedNotes();
         startChatPolling();
         fetchChatsAndRender(true);
     } else {
@@ -1011,25 +1355,31 @@ async function updateSessionsList() {
 }
 
 // Notes helpers
-function getNotesStorageKey() {
-    const userId = currentUser?.id || currentUser?._id || currentUser?.email;
-    return userId ? `feynman-notes-${userId}` : 'feynman-notes';
-}
+function normalizeAttachment(attachment) {
+    if (!attachment) {
+        return null;
+    }
 
-function getNotesActiveStorageKey() {
-    const userId = currentUser?.id || currentUser?._id || currentUser?.email;
-    return userId ? `feynman-notes-active-${userId}` : 'feynman-notes-active';
-}
+    const id = attachment.id || attachment._id || null;
+    const uploadedBy = attachment.uploadedBy && typeof attachment.uploadedBy === 'object'
+        ? {
+            id: attachment.uploadedBy.id || attachment.uploadedBy._id || attachment.uploadedBy,
+            name: attachment.uploadedBy.name || '',
+            email: attachment.uploadedBy.email || ''
+        }
+        : null;
 
-function createDefaultNotes() {
-    const now = new Date().toISOString();
-    return [{
-        id: `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        title: 'Plan your next explanation',
-        content: 'Use Feynman notes to break complicated ideas into simple language. Outline what you will teach, the analogies you will use, and the gaps you still need to fill.',
-        createdAt: now,
-        updatedAt: now
-    }];
+    const url = attachment.url || (attachment.fileName ? `/uploads/notes/${attachment.fileName}` : '');
+
+    return {
+        id,
+        originalName: attachment.originalName || attachment.name || 'Attachment',
+        mimeType: attachment.mimeType || '',
+        size: typeof attachment.size === 'number' ? attachment.size : 0,
+        uploadedAt: attachment.uploadedAt || attachment.createdAt || null,
+        uploadedBy,
+        url
+    };
 }
 
 function normalizeNote(note) {
@@ -1037,13 +1387,24 @@ function normalizeNote(note) {
         return null;
     }
 
-    const createdAt = note.createdAt || note.updatedAt || new Date().toISOString();
+    const createdBy = note.createdBy && typeof note.createdBy === 'object'
+        ? {
+            id: note.createdBy.id || note.createdBy._id || note.createdBy,
+            name: note.createdBy.name || '',
+            email: note.createdBy.email || ''
+        }
+        : null;
+
+    const createdAtIso = note.createdAt || note.updatedAt || new Date().toISOString();
+
     return {
         id: note.id || note._id || `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         title: note.title || 'Untitled note',
         content: note.content || '',
-        createdAt,
-        updatedAt: note.updatedAt || createdAt
+        createdAt: createdAtIso,
+        updatedAt: note.updatedAt || createdAtIso,
+        createdBy,
+        attachments: Array.isArray(note.attachments) ? note.attachments.map(normalizeAttachment).filter(Boolean) : []
     };
 }
 
@@ -1055,72 +1416,54 @@ function sortNotesDescending(list) {
     });
 }
 
-function loadNotesForCurrentUser() {
+async function loadSharedNotes() {
     if (!currentUser) {
         resetNotesState();
         return;
     }
 
-    const storageKey = getNotesStorageKey();
-    const stored = localStorage.getItem(storageKey);
-    let parsedNotes = [];
+    try {
+        const fetched = await fetchNotesCollection();
+        notes = sortNotesDescending(fetched);
 
-    if (stored) {
-        try {
-            const raw = JSON.parse(stored);
-            parsedNotes = Array.isArray(raw) ? raw.map(normalizeNote).filter(Boolean) : [];
-        } catch (error) {
-            console.warn('Failed to parse stored notes, resetting.', error);
-            parsedNotes = [];
+        if (!activeNoteId || !notes.some(note => note.id === activeNoteId)) {
+            activeNoteId = notes.length > 0 ? notes[0].id : null;
         }
-    } else {
-        parsedNotes = createDefaultNotes();
-        localStorage.setItem(storageKey, JSON.stringify(parsedNotes));
+
+        renderNotesList();
+        renderNotesEditor();
+    } catch (error) {
+        console.error('Failed to load notes:', error);
+        showAlert('Unable to load shared notes right now. Please try again later.', 'error');
+        resetNotesState();
     }
-
-    notes = sortNotesDescending(parsedNotes);
-
-    const storedActiveId = localStorage.getItem(getNotesActiveStorageKey());
-    if (storedActiveId && notes.some(note => note.id === storedActiveId)) {
-        activeNoteId = storedActiveId;
-    } else {
-        activeNoteId = notes.length > 0 ? notes[0].id : null;
-    }
-
-    renderNotesList();
-    renderNotesEditor();
-    persistActiveNoteId();
 }
 
-function saveNotesForCurrentUser() {
-    if (!currentUser) {
+function getActiveNote() {
+    if (!activeNoteId) {
+        return null;
+    }
+    return notes.find(note => note.id === activeNoteId) || null;
+}
+
+function upsertNoteInState(note) {
+    const normalized = normalizeNote(note);
+    if (!normalized) {
         return;
     }
 
-    const storageKey = getNotesStorageKey();
-    const payload = notes.map(note => ({
-        id: note.id,
-        title: note.title,
-        content: note.content,
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt
-    }));
+    const index = notes.findIndex(item => item.id === normalized.id);
+    if (index >= 0) {
+        notes[index] = normalized;
+    } else {
+        notes = [normalized, ...notes];
+    }
 
-    localStorage.setItem(storageKey, JSON.stringify(payload));
-    persistActiveNoteId();
+    notes = sortNotesDescending(notes);
 }
 
-function persistActiveNoteId() {
-    if (!currentUser) {
-        return;
-    }
-
-    const activeKey = getNotesActiveStorageKey();
-    if (activeNoteId) {
-        localStorage.setItem(activeKey, activeNoteId);
-    } else {
-        localStorage.removeItem(activeKey);
-    }
+function removeNoteFromState(noteId) {
+    notes = notes.filter(note => note.id !== noteId);
 }
 
 function renderNotesList() {
@@ -1130,16 +1473,14 @@ function renderNotesList() {
     }
 
     if (!currentUser) {
-        listElement.innerHTML = '<div class="notes-list-empty">Log in to access your notes.</div>';
+        listElement.innerHTML = '<div class="notes-list-empty">Log in to access shared notes.</div>';
         return;
     }
 
     if (!notes || notes.length === 0) {
-        listElement.innerHTML = '<div class="notes-list-empty">No notes yet. Create a note to capture your ideas.</div>';
+        listElement.innerHTML = '<div class="notes-list-empty">No notes yet. Create one to share resources with everyone.</div>';
         return;
     }
-
-    notes = sortNotesDescending(notes);
 
     listElement.innerHTML = notes.map(note => {
         const id = escapeHtml(note.id);
@@ -1147,7 +1488,21 @@ function renderNotesList() {
         const previewSource = note.content ? note.content.replace(/\s+/g, ' ').trim() : '';
         const preview = previewSource ? escapeHtml(previewSource.slice(0, 80) + (previewSource.length > 80 ? '…' : '')) : 'Add details to this note.';
         const updated = note.updatedAt ? formatNoteTimestamp(note.updatedAt) : '';
-        const meta = updated ? `<span>${escapeHtml(updated)}</span>` : '';
+        const owner = note.createdBy ? (note.createdBy.name || note.createdBy.email || '') : '';
+        const attachmentsCount = note.attachments ? note.attachments.length : 0;
+
+        const metaParts = [];
+        if (updated) {
+            metaParts.push(escapeHtml(updated));
+        }
+        if (owner) {
+            metaParts.push(escapeHtml(owner));
+        }
+        if (attachmentsCount > 0) {
+            metaParts.push(`${attachmentsCount} file${attachmentsCount === 1 ? '' : 's'}`);
+        }
+
+        const meta = metaParts.length > 0 ? metaParts.join(' • ') : '';
 
         return `
             <button type="button" class="notes-list-item ${note.id === activeNoteId ? 'active' : ''}" data-note-id="${id}">
@@ -1165,6 +1520,8 @@ function renderNotesEditor() {
     const titleInput = document.getElementById('note-title-input');
     const contentInput = document.getElementById('note-content-input');
     const updatedElement = document.getElementById('note-updated-at');
+    const ownerElement = document.getElementById('note-owner');
+    const uploadButton = document.getElementById('note-attachment-upload');
 
     if (!emptyState || !form) {
         return;
@@ -1173,61 +1530,85 @@ function renderNotesEditor() {
     if (!currentUser) {
         form.classList.add('hidden');
         emptyState.classList.remove('hidden');
-        emptyState.innerHTML = '<h4>Notes unavailable</h4><p>Log in to create and review your notes.</p>';
+        emptyState.innerHTML = '<h4>Notes unavailable</h4><p>Log in to create, view, and download shared notes.</p>';
         return;
     }
 
-    if (!activeNoteId) {
-        form.classList.add('hidden');
-        emptyState.classList.remove('hidden');
-        emptyState.innerHTML = '<h4>No note selected</h4><p>Create or choose a note to start capturing insights.</p>';
-        return;
-    }
-
-    const note = notes.find(item => item.id === activeNoteId);
+    const note = getActiveNote();
 
     if (!note) {
-        activeNoteId = null;
-        renderNotesList();
-        renderNotesEditor();
+        form.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        emptyState.innerHTML = '<h4>No note selected</h4><p>Create or choose a note to start sharing resources.</p>';
+        renderNoteAttachments(null);
+        if (uploadButton) {
+            uploadButton.disabled = true;
+        }
         return;
     }
 
     emptyState.classList.add('hidden');
     form.classList.remove('hidden');
 
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    const currentId = getCurrentUserId();
+    const canEdit = ownerId ? ownerId === currentId : true;
+
     if (titleInput) {
         titleInput.value = note.title || '';
+        titleInput.disabled = !canEdit;
     }
     if (contentInput) {
         contentInput.value = note.content || '';
+        contentInput.disabled = !canEdit;
     }
     if (updatedElement) {
         updatedElement.textContent = note.updatedAt ? `Updated ${formatNoteTimestamp(note.updatedAt)}` : '';
     }
+    if (ownerElement) {
+        const ownerLabel = note.createdBy ? (note.createdBy.name || note.createdBy.email || '') : '';
+        ownerElement.textContent = ownerLabel ? `Shared by ${ownerLabel}` : '';
+    }
+
+    const saveButton = document.querySelector('#notes-editor-form button[type="submit"]');
+    const deleteButton = document.getElementById('delete-note-button');
+
+    if (saveButton) {
+        saveButton.disabled = !canEdit;
+    }
+    if (deleteButton) {
+        deleteButton.classList.toggle('hidden', !canEdit);
+        deleteButton.disabled = !canEdit;
+    }
+    if (uploadButton) {
+        uploadButton.disabled = !canEdit;
+    }
+
+    renderNoteAttachments(note, canEdit);
 }
 
-function handleAddNote() {
+async function handleAddNote() {
     if (!currentUser) {
         showLogin();
         return;
     }
 
-    const now = new Date().toISOString();
-    const newNote = {
-        id: `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        title: 'Untitled note',
-        content: '',
-        createdAt: now,
-        updatedAt: now
-    };
+    try {
+        const newNote = await createNoteRequest({ title: 'Untitled note', content: '' });
+        if (!newNote) {
+            return;
+        }
 
-    notes = [newNote, ...notes];
-    activeNoteId = newNote.id;
-    saveNotesForCurrentUser();
-    renderNotesList();
-    renderNotesEditor();
-    focusNoteTitle();
+        upsertNoteInState(newNote);
+        activeNoteId = newNote.id;
+        renderNotesList();
+        renderNotesEditor();
+        focusNoteTitle();
+        showAlert('Note created successfully.', 'success');
+    } catch (error) {
+        console.error('Failed to create note:', error);
+        showAlert('Unable to create note: ' + (error.message || 'Unknown error'), 'error');
+    }
 }
 
 function handleNotesListClick(event) {
@@ -1242,12 +1623,11 @@ function handleNotesListClick(event) {
     }
 
     activeNoteId = noteId;
-    persistActiveNoteId();
     renderNotesList();
     renderNotesEditor();
 }
 
-function handleNoteFormSubmit(event) {
+async function handleNoteFormSubmit(event) {
     event.preventDefault();
 
     if (!currentUser) {
@@ -1255,7 +1635,14 @@ function handleNoteFormSubmit(event) {
         return;
     }
 
-    if (!activeNoteId) {
+    const note = getActiveNote();
+    if (!note) {
+        return;
+    }
+
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    if (ownerId && ownerId !== getCurrentUserId()) {
+        showAlert('Only the creator can edit this note.', 'info');
         return;
     }
 
@@ -1264,26 +1651,26 @@ function handleNoteFormSubmit(event) {
     const title = titleInput ? titleInput.value.trim() : '';
     const content = contentInput ? contentInput.value.trim() : '';
 
-    const index = notes.findIndex(note => note.id === activeNoteId);
-    if (index === -1) {
-        return;
+    try {
+        const updated = await updateNoteRequest(note.id, {
+            title: title || 'Untitled note',
+            content
+        });
+
+        if (updated) {
+            upsertNoteInState(updated);
+            activeNoteId = updated.id;
+            renderNotesList();
+            renderNotesEditor();
+            showAlert('Note saved.', 'success');
+        }
+    } catch (error) {
+        console.error('Failed to save note:', error);
+        showAlert('Unable to save note: ' + (error.message || 'Unknown error'), 'error');
     }
-
-    const now = new Date().toISOString();
-    notes[index] = {
-        ...notes[index],
-        title: title || 'Untitled note',
-        content,
-        updatedAt: now
-    };
-
-    notes = sortNotesDescending(notes);
-    saveNotesForCurrentUser();
-    renderNotesList();
-    renderNotesEditor();
 }
 
-function handleDeleteNote(event) {
+async function handleDeleteNote(event) {
     event.preventDefault();
 
     if (!currentUser) {
@@ -1291,16 +1678,28 @@ function handleDeleteNote(event) {
         return;
     }
 
-    if (!activeNoteId) {
+    const note = getActiveNote();
+    if (!note) {
         return;
     }
 
-    notes = notes.filter(note => note.id !== activeNoteId);
-    notes = sortNotesDescending(notes);
-    activeNoteId = notes.length > 0 ? notes[0].id : null;
-    saveNotesForCurrentUser();
-    renderNotesList();
-    renderNotesEditor();
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    if (ownerId && ownerId !== getCurrentUserId()) {
+        showAlert('Only the creator can delete this note.', 'info');
+        return;
+    }
+
+    try {
+        await deleteNoteRequest(note.id);
+        removeNoteFromState(note.id);
+        activeNoteId = notes.length > 0 ? notes[0].id : null;
+        renderNotesList();
+        renderNotesEditor();
+        showAlert('Note deleted.', 'success');
+    } catch (error) {
+        console.error('Failed to delete note:', error);
+        showAlert('Unable to delete note: ' + (error.message || 'Unknown error'), 'error');
+    }
 }
 
 function resetNotesState() {
@@ -1308,6 +1707,174 @@ function resetNotesState() {
     activeNoteId = null;
     renderNotesList();
     renderNotesEditor();
+    renderNoteAttachments(null);
+}
+
+function renderNoteAttachments(note, canEdit = false) {
+    const listElement = document.getElementById('note-attachments-list');
+    if (!listElement) {
+        return;
+    }
+
+    if (!note) {
+        listElement.innerHTML = '<p class="notes-attachments-empty">Select a note to view shared files.</p>';
+        return;
+    }
+
+    const attachments = Array.isArray(note.attachments) ? note.attachments : [];
+
+    if (attachments.length === 0) {
+        listElement.innerHTML = '<p class="notes-attachments-empty">No files yet. Upload PDFs, Word docs, or spreadsheets to share resources.</p>';
+        return;
+    }
+
+    listElement.innerHTML = attachments.map(attachment => {
+        const attachmentId = attachment.id || attachment._id || '';
+        const sizeLabel = attachment.size ? formatFileSize(attachment.size) : '';
+        const uploadedLabel = attachment.uploadedAt ? formatNoteTimestamp(attachment.uploadedAt) : '';
+        const uploaderRaw = attachment.uploadedBy ? (attachment.uploadedBy.name || attachment.uploadedBy.email || '') : '';
+        const uploader = uploaderRaw ? escapeHtml(uploaderRaw) : '';
+
+        const metaParts = [];
+        if (sizeLabel) {
+            metaParts.push(sizeLabel);
+        }
+        if (uploadedLabel || uploader) {
+            const uploadedText = uploadedLabel ? `Uploaded ${escapeHtml(uploadedLabel)}` : 'Uploaded';
+            const byText = uploader ? ` by ${uploader}` : '';
+            metaParts.push(`${uploadedText}${byText}`);
+        }
+
+        const meta = metaParts.join(' • ');
+        const downloadUrl = attachment.url ? escapeHtml(attachment.url) : '#';
+        const name = escapeHtml(attachment.originalName || 'Attachment');
+
+        const removeButton = canEdit && attachmentId
+            ? `<button type="button" class="note-attachment-remove" data-attachment-id="${escapeHtml(attachmentId)}">Remove</button>`
+            : '';
+
+        return `
+            <div class="note-attachment" data-attachment-id="${escapeHtml(attachmentId)}">
+                <div class="note-attachment-details">
+                    <span class="note-attachment-name">${name}</span>
+                    <span class="note-attachment-meta">${meta}</span>
+                </div>
+                <div class="note-attachment-actions">
+                    <a class="note-attachment-download" href="${downloadUrl}" target="_blank" rel="noopener">Download</a>
+                    ${removeButton}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function handleNoteAttachmentUploadClick() {
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    const note = getActiveNote();
+    if (!note) {
+        showAlert('Select or create a note before uploading files.', 'info');
+        return;
+    }
+
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    if (ownerId && ownerId !== getCurrentUserId()) {
+        showAlert('Only the creator can add files to this note.', 'info');
+        return;
+    }
+
+    const input = document.getElementById('note-attachment-input');
+    if (input) {
+        input.value = '';
+        input.click();
+    }
+}
+
+async function handleNoteAttachmentInputChange(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+
+    if (files.length === 0) {
+        return;
+    }
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    const note = getActiveNote();
+    if (!note) {
+        showAlert('Select or create a note before uploading files.', 'info');
+        return;
+    }
+
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    if (ownerId && ownerId !== getCurrentUserId()) {
+        showAlert('Only the creator can add files to this note.', 'info');
+        return;
+    }
+
+    try {
+        const updated = await uploadNoteAttachments(note.id, files);
+        if (updated) {
+            upsertNoteInState(updated);
+            activeNoteId = updated.id;
+            renderNotesList();
+            renderNotesEditor();
+            showAlert('Files uploaded successfully.', 'success');
+        }
+    } catch (error) {
+        console.error('Failed to upload attachments:', error);
+        showAlert('Unable to upload files: ' + (error.message || 'Unknown error'), 'error');
+    }
+}
+
+async function handleNoteAttachmentListClick(event) {
+    const removeButton = event.target.closest('.note-attachment-remove');
+    if (!removeButton) {
+        return;
+    }
+
+    event.preventDefault();
+
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    const attachmentId = removeButton.getAttribute('data-attachment-id');
+    if (!attachmentId) {
+        return;
+    }
+
+    const note = getActiveNote();
+    if (!note) {
+        return;
+    }
+
+    const ownerId = note.createdBy?.id ? note.createdBy.id.toString() : null;
+    if (ownerId && ownerId !== getCurrentUserId()) {
+        showAlert('Only the creator can remove files from this note.', 'info');
+        return;
+    }
+
+    try {
+        const updated = await deleteNoteAttachmentRequest(note.id, attachmentId);
+        if (updated) {
+            upsertNoteInState(updated);
+            activeNoteId = updated.id;
+            renderNotesList();
+            renderNotesEditor();
+            showAlert('Attachment removed.', 'success');
+        }
+    } catch (error) {
+        console.error('Failed to remove attachment:', error);
+        showAlert('Unable to remove attachment: ' + (error.message || 'Unknown error'), 'error');
+    }
 }
 
 function focusNoteTitle() {
@@ -1336,6 +1903,34 @@ function formatNoteTimestamp(dateString) {
     });
 }
 
+function formatFileSize(bytes) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes)) {
+        return '';
+    }
+
+    const absoluteBytes = Math.max(bytes, 0);
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = absoluteBytes;
+    let index = 0;
+
+    while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+    }
+
+    const formatted = value >= 10 || index === 0 ? Math.round(value) : value.toFixed(1);
+    return `${formatted} ${units[index]}`;
+}
+
+function getCurrentUserId() {
+    if (!currentUser) {
+        return null;
+    }
+
+    const id = currentUser.id || currentUser._id || currentUser.email;
+    return id ? id.toString() : null;
+}
+
 // Chat UI helpers
 function getChatPartner(chat) {
     if (!chat || !Array.isArray(chat.participants)) {
@@ -1344,11 +1939,89 @@ function getChatPartner(chat) {
 
     const partner = chat.participants.find(participant => {
         const participantId = participant?.id || participant?._id || participant;
-        const currentId = currentUser?.id || currentUser?._id;
+        const currentId = getCurrentUserId();
         return participantId && currentId && participantId.toString() !== currentId.toString();
     });
 
     return partner || chat.participants[0] || null;
+}
+
+function getChatSummaryPartnerKey(chat) {
+    if (!chat || !Array.isArray(chat.participants)) {
+        return chat?.id || chat?._id || null;
+    }
+
+    const currentId = getCurrentUserId();
+    if (!currentId) {
+        return chat.id || chat._id || null;
+    }
+
+    if (chat.participants.length !== 2) {
+        return chat.id || chat._id || null;
+    }
+
+    const partner = chat.participants.find(participant => {
+        const participantId = participant?.id || participant?._id || participant;
+        return participantId && participantId.toString() !== currentId;
+    });
+
+    if (!partner) {
+        return chat.id || chat._id || null;
+    }
+
+    const partnerId = partner.id || partner._id || partner;
+    return partnerId ? partnerId.toString() : (chat.id || chat._id || null);
+}
+
+function dedupeChatsByPartner(chatSummaries, preferredChatId = null) {
+    const deduped = new Map();
+
+    (chatSummaries || []).forEach(chat => {
+        if (!chat) {
+            return;
+        }
+
+        const partnerKey = getChatSummaryPartnerKey(chat) || (chat.id || chat._id || Math.random().toString(36).slice(2));
+        const normalizedKey = partnerKey ? partnerKey.toString() : (chat.id || chat._id);
+        const existing = deduped.get(normalizedKey);
+
+        if (!existing) {
+            deduped.set(normalizedKey, chat);
+            return;
+        }
+
+        const existingId = existing.id || existing._id;
+        const chatId = chat.id || chat._id;
+
+        if (preferredChatId && chatId && chatId === preferredChatId) {
+            deduped.set(normalizedKey, chat);
+            return;
+        }
+
+        const existingTime = existing.lastMessageAt ? new Date(existing.lastMessageAt).getTime() : 0;
+        const newTime = chat.lastMessageAt ? new Date(chat.lastMessageAt).getTime() : 0;
+
+        if (newTime > existingTime || (!existingTime && newTime)) {
+            deduped.set(normalizedKey, chat);
+        } else if (existingId === preferredChatId) {
+            deduped.set(normalizedKey, existing);
+        }
+    });
+
+    return Array.from(deduped.values());
+}
+
+function findChatByPartnerId(partnerId) {
+    if (!partnerId) {
+        return null;
+    }
+
+    const normalized = partnerId.toString();
+    return chats.find(chat => {
+        const partner = getChatPartner(chat);
+        const candidateId = partner?.id || partner?._id || partner;
+        return candidateId && candidateId.toString() === normalized;
+    }) || null;
 }
 
 function renderChatList() {
@@ -1510,6 +2183,17 @@ async function startChatWithUser(userId) {
         return;
     }
 
+    const existingChat = findChatByPartnerId(userId);
+    if (existingChat) {
+        const chatId = existingChat.id || existingChat._id;
+        activeChatId = chatId;
+        renderChatList();
+        toggleNewChatPanel(false);
+        showSessionsTab('messages');
+        await openChat(chatId);
+        return;
+    }
+
     try {
         const chat = await createChatThread(userId);
         updateChatSummary(chat);
@@ -1639,8 +2323,14 @@ function formatMessageStatus(status) {
 
 function isOutgoingMessage(message) {
     const senderId = message?.sender?.id || message?.sender?._id || message?.sender;
-    const currentId = currentUser?.id || currentUser?._id;
-    return senderId && currentId && senderId.toString() === currentId.toString();
+    const currentId = getCurrentUserId();
+
+    if (!senderId || !currentId) {
+        return false;
+    }
+
+    const normalizedSender = senderId.toString ? senderId.toString() : String(senderId);
+    return normalizedSender === currentId.toString();
 }
 
 function scrollChatToBottom() {
@@ -1678,7 +2368,9 @@ function updateChatSummary(summary) {
         chats.push(summary);
     }
 
-    chats.sort((a, b) => {
+    const preferredChatId = activeChatId || chatId;
+    const deduped = dedupeChatsByPartner(chats, preferredChatId);
+    chats = deduped.sort((a, b) => {
         const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
         const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
         return bTime - aTime;
@@ -1692,7 +2384,8 @@ async function fetchChatsAndRender(forceReloadActive = false) {
 
     try {
         const fetchedChats = await getChatsList();
-        chats = fetchedChats.sort((a, b) => {
+        const deduped = dedupeChatsByPartner(fetchedChats, activeChatId);
+        chats = deduped.sort((a, b) => {
             const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
             const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
             return bTime - aTime;

@@ -256,8 +256,20 @@
                                             <label for="note-content-input" class="form-label">Content</label>
                                             <textarea id="note-content-input" class="form-control notes-editor-textarea" rows="10" placeholder="Break concepts into simple explanations..." required></textarea>
                                         </div>
+                                        <div class="notes-editor-field">
+                                            <label class="form-label" for="note-attachment-input">Attachments</label>
+                                            <div id="note-attachments-list" class="notes-attachments-list">
+                                                <p class="notes-attachments-empty">Select a note to view shared files.</p>
+                                            </div>
+                                            <div class="notes-attachment-actions">
+                                                <input type="file" id="note-attachment-input" class="notes-attachment-input" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt">
+                                                <button type="button" id="note-attachment-upload" class="btn btn--secondary btn--sm">Upload files</button>
+                                                <span id="note-attachments-hint" class="notes-attachment-hint">PDF, Word, Excel, or PowerPoint files up to 15 MB each.</span>
+                                            </div>
+                                        </div>
                                         <div class="notes-editor-actions">
                                             <div class="notes-editor-meta">
+                                                <span id="note-owner" class="notes-meta"></span>
                                                 <span id="note-updated-at" class="notes-meta"></span>
                                             </div>
                                             <div class="notes-editor-buttons">

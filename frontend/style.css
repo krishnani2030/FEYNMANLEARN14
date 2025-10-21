@@ -1432,7 +1432,8 @@ a:hover {
   font-size: var(--font-size-xs);
   margin-bottom: var(--space-6);
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-8);
 }
 
 .notes-list-item-preview {
@@ -1505,6 +1506,104 @@ a:hover {
 .notes-meta {
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
+}
+
+.notes-editor-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.notes-attachment-input {
+  display: none;
+}
+
+.notes-attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  align-items: center;
+}
+
+.notes-attachment-hint {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.notes-attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  border: 1px dashed rgba(var(--color-brown-600-rgb), 0.3);
+  border-radius: var(--radius-md);
+  background: rgba(var(--color-brown-600-rgb), 0.04);
+  min-height: 88px;
+}
+
+.notes-attachments-empty {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.note-attachment {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  background: var(--color-white);
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.note-attachment-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.note-attachment-name {
+  font-weight: var(--font-weight-medium);
+  color: var(--color-black);
+}
+
+.note-attachment-meta {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.note-attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.note-attachment-download {
+  color: var(--color-teal-600);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+}
+
+.note-attachment-download:hover {
+  text-decoration: underline;
+}
+
+.note-attachment-remove {
+  background: none;
+  border: none;
+  color: var(--color-red-500);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  padding: 0;
+}
+
+.note-attachment-remove:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 1024px) {
@@ -2141,12 +2240,14 @@ a:hover {
 
 .chat-message.outgoing {
   margin-left: auto;
+  align-self: flex-end;
   background: rgba(var(--color-teal-500-rgb), 0.12);
   border: 1px solid rgba(var(--color-teal-500-rgb), 0.25);
 }
 
 .chat-message.incoming {
   margin-right: auto;
+  align-self: flex-start;
   background: rgba(var(--color-brown-600-rgb), 0.05);
   border: 1px solid rgba(var(--color-brown-600-rgb), 0.12);
 }

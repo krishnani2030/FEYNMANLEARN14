@@ -13,6 +13,7 @@ const authRoutes = require('./routes/auth');
 const sessionRoutes = require('./routes/sessions');
 const userRoutes = require('./routes/users');
 const chatRoutes = require('./routes/chats');
+const noteRoutes = require('./routes/notes');
 const { notifySessionStart } = require('./services/notificationService');
 const { checkOngoingSessions } = require('./services/sessionService');
 
@@ -64,7 +65,7 @@ app.use(cors({
 }));
 
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
@@ -105,7 +106,9 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/feynman-l
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/users', userRoutes);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/chats', chatRoutes);
+app.use('/api/notes', noteRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
