@@ -7,6 +7,8 @@ const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
 
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || null;
+
 const generateToken = (userId) => {
     return jwt.sign(
         { userId },
@@ -18,12 +20,12 @@ const generateToken = (userId) => {
 let oauthClient = null;
 
 function getOAuthClient() {
-    if (!process.env.GOOGLE_OAUTH_CLIENT_ID) {
+    if (!GOOGLE_CLIENT_ID) {
         throw new Error('Google OAuth client ID is not configured');
     }
 
     if (!oauthClient) {
-        oauthClient = new OAuth2Client(process.env.GOOGLE_OAUTH_CLIENT_ID);
+        oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
     }
 
     return oauthClient;
@@ -33,7 +35,7 @@ async function verifyGoogleToken(idToken) {
     const client = getOAuthClient();
     const ticket = await client.verifyIdToken({
         idToken,
-        audience: process.env.GOOGLE_OAUTH_CLIENT_ID
+        audience: GOOGLE_CLIENT_ID
     });
 
     return ticket.getPayload();
@@ -60,7 +62,7 @@ router.post('/google', [
             return res.status(400).json({ error: 'Validation failed', details: errors.array() });
         }
 
-        if (!process.env.GOOGLE_OAUTH_CLIENT_ID) {
+        if (!GOOGLE_CLIENT_ID) {
             return res.status(503).json({ error: 'Google login is not configured' });
         }
 

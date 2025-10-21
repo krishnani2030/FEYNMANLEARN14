@@ -119,13 +119,14 @@ The frontend features a sophisticated **black and white design**:
 
 ## 🔐 Authentication
 
-### Sample Users (after seeding):
-- **Student:** alex@example.com / password123
-- **Student:** sarah@example.com / password123
-- **Admin:** admin@example.com / admin123
+Feynman Learn now uses **Google Sign-In** exclusively. When a user authenticates
+with Google, the backend issues a short-lived JWT that is stored in an
+HTTP-only cookie. Legacy email/password accounts are removed automatically at
+startup, so make sure to configure a Google OAuth Client ID before launching
+the server.
 
 ### Security Features:
-- Password hashing with bcrypt
+- Google Identity Services for login
 - JWT tokens in HTTP-only cookies
 - Rate limiting on auth endpoints
 - Input validation and sanitization
@@ -133,8 +134,7 @@ The frontend features a sophisticated **black and white design**:
 ## 📡 API Endpoints
 
 ### Authentication
-- `POST /api/auth/signup` - Register new user
-- `POST /api/auth/login` - Login user
+- `POST /api/auth/google` - Exchange a Google credential for a session
 - `POST /api/auth/logout` - Logout user
 - `GET /api/auth/me` - Get current user
 
@@ -168,9 +168,16 @@ The backend serves the frontend in production mode.
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `MONGODB_URI` | MongoDB connection string | Yes |
-| `JWT_SECRET` | JWT signing secret | Yes |
+| `JWT_SECRET` | JWT signing secret used for session cookies | Yes |
+| `JWT_EXPIRES_IN` | JWT expiration window (e.g. `7d`) | No (default: `7d`) |
 | `PORT` | Server port | No (default: 5000) |
 | `CLIENT_URL` | Frontend URL for CORS | No (default: http://localhost:3000) |
+| `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth Client ID (or legacy `GOOGLE_CLIENT_ID`) | Yes |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Service account email for Calendar API | Required for Meet sync |
+| `GOOGLE_PRIVATE_KEY` | Private key for the service account (escaped newlines) | Required for Meet sync |
+| `GOOGLE_CALENDAR_ID` | Calendar ID where Meet events are created | Required for Meet sync |
+| `GOOGLE_CALENDAR_TIMEZONE` | Calendar timezone (e.g. `UTC`) | No (default: `UTC`) |
+| `EMAIL_SERVICE`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM` | SMTP configuration for enrollment/reminder emails | Required for email notifications |
 
 ## 🛠️ Development
 
