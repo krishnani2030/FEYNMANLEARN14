@@ -144,6 +144,7 @@
                         </div>
                         <button type="submit" class="btn btn--primary btn--full-width">Sign In</button>
                     </form>
+                    <div id="verification-notice" class="verification-notice hidden"></div>
                     <div class="auth-footer">
                         <p>Don't have an account? <a href="#" onclick="showSignup()">Sign up</a></p>
                         <p><a href="#" onclick="showLandingPage()">â Back to home</a></p>
@@ -378,7 +379,21 @@
                             <label class="form-label" for="session-meet-link">Google Meet Link (Optional)</label>
                             <input type="url" id="session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
                         </div>
-                        
+                        <div class="form-group form-group--checkbox">
+                            <label class="checkbox">
+                                <input type="checkbox" id="session-generate-meet">
+                                <span>Generate a Google Meet link for me</span>
+                            </label>
+                            <p class="form-helper">We'll create the meeting automatically when you save.</p>
+                        </div>
+                        <div class="form-group form-group--checkbox">
+                            <label class="checkbox">
+                                <input type="checkbox" id="session-generate-meet">
+                                <span>Generate a Google Meet link for me</span>
+                            </label>
+                            <p class="form-helper">We'll create the meeting automatically when you save.</p>
+                        </div>
+
                         <button type="submit" class="btn btn--primary btn--lg">Create Session</button>
                     </form>
                 </div>
@@ -429,6 +444,13 @@
                         <div class="form-group">
                             <label class="form-label" for="edit-session-meet-link">Google Meet Link (Optional)</label>
                             <input type="url" id="edit-session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
+                        </div>
+                        <div class="form-group form-group--checkbox">
+                            <label class="checkbox">
+                                <input type="checkbox" id="edit-session-generate-meet">
+                                <span>Refresh Google Meet link automatically</span>
+                            </label>
+                            <p class="form-helper">Use this to generate or update a Meet link for the session.</p>
                         </div>
                         
                         <div class="form-actions">

@@ -182,6 +182,16 @@ function formatNote(note) {
     };
 }
 
+function ensureNoteCreator(note, userId) {
+    if (!note) {
+        return;
+    }
+
+    if (!note.createdBy && userId) {
+        note.createdBy = userId;
+    }
+}
+
 async function decodeAndStoreAttachment(payload, userId) {
     const parsed = parseAttachmentPayload(payload);
     let buffer;
@@ -315,6 +325,7 @@ router.put('/:noteId', async (req, res) => {
             note.content = content;
         }
 
+        ensureNoteCreator(note, req.user?._id);
         await note.save();
         await note.populate('createdBy', 'name email');
         await note.populate('attachments.uploadedBy', 'name email');
@@ -343,6 +354,7 @@ router.post('/:noteId/attachments', async (req, res) => {
 
         note.attachments.push(...storedAttachments);
         note.updatedAt = new Date();
+        ensureNoteCreator(note, req.user?._id);
         await note.save();
         await note.populate('createdBy', 'name email');
         await note.populate('attachments.uploadedBy', 'name email');
@@ -375,6 +387,7 @@ router.delete('/:noteId/attachments/:attachmentId', async (req, res) => {
         await removeAttachmentFile(attachment.fileName);
         attachment.deleteOne();
         note.updatedAt = new Date();
+        ensureNoteCreator(note, req.user?._id);
         await note.save();
         await note.populate('createdBy', 'name email');
         await note.populate('attachments.uploadedBy', 'name email');

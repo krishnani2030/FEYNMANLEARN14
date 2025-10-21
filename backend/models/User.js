@@ -31,6 +31,18 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
+    emailVerified: {
+        type: Boolean,
+        default: false
+    },
+    emailVerificationToken: {
+        type: String,
+        default: null
+    },
+    emailVerificationExpires: {
+        type: Date,
+        default: null
+    },
     lastLogin: {
         type: Date,
         default: null
@@ -48,6 +60,8 @@ const userSchema = new mongoose.Schema({
     toJSON: {
         transform: function(doc, ret) {
             delete ret.passwordHash;
+            delete ret.emailVerificationToken;
+            delete ret.emailVerificationExpires;
             delete ret.__v;
             return ret;
         }
@@ -56,6 +70,7 @@ const userSchema = new mongoose.Schema({
 
 // Index for faster email lookups
 userSchema.index({ email: 1 });
+userSchema.index({ emailVerificationToken: 1 }, { sparse: true });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

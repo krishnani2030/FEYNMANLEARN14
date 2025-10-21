@@ -36,6 +36,11 @@ const chatThreadSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     }],
+    participantsKey: {
+        type: String,
+        required: true,
+        trim: true
+    },
     messages: [messageSchema],
     lastMessageSnippet: {
         type: String,
@@ -52,6 +57,38 @@ const chatThreadSchema = new mongoose.Schema({
 chatThreadSchema.index({ participants: 1 });
 chatThreadSchema.index({ lastMessageAt: -1 });
 chatThreadSchema.index({ 'messages.createdAt': -1 });
+chatThreadSchema.index({ participantsKey: 1 });
+
+chatThreadSchema.pre('validate', function(next) {
+    if (!Array.isArray(this.participants)) {
+        this.participants = [];
+    }
+
+    const normalizedIds = this.participants
+        .map(participant => {
+            if (!participant) {
+                return null;
+            }
+
+            if (participant._id) {
+                participant = participant._id;
+            }
+
+            if (typeof participant === 'object' && typeof participant.toString === 'function') {
+                return participant.toString();
+            }
+
+            return participant.toString ? participant.toString() : String(participant);
+        })
+        .filter(Boolean);
+
+    const uniqueSortedIds = Array.from(new Set(normalizedIds)).sort();
+
+    this.participants = uniqueSortedIds.map(id => new mongoose.Types.ObjectId(id));
+    this.participantsKey = uniqueSortedIds.join(':');
+
+    next();
+});
 
 chatThreadSchema.methods.addMessage = function(senderId, content) {
     const message = {

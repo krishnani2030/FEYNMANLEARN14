@@ -26,6 +26,7 @@ const formatChatSummary = (chat, currentUserId) => {
 
     return {
         id: chat._id,
+        participantsKey: chat.participantsKey,
         participants: (chat.participants || []).map(participant => ({
             id: participant._id,
             name: participant.name,
@@ -37,6 +38,41 @@ const formatChatSummary = (chat, currentUserId) => {
     };
 };
 
+const deriveParticipantsKey = (chat) => {
+    if (!chat || !Array.isArray(chat.participants)) {
+        return null;
+    }
+
+    const ids = chat.participants
+        .map(participant => {
+            if (!participant) {
+                return null;
+            }
+
+            if (participant._id) {
+                return participant._id.toString();
+            }
+
+            if (participant.id) {
+                return participant.id.toString();
+            }
+
+            if (typeof participant === 'object' && participant.user) {
+                return participant.user.toString();
+            }
+
+            return participant.toString();
+        })
+        .filter(Boolean)
+        .sort();
+
+    if (ids.length === 0) {
+        return null;
+    }
+
+    return Array.from(new Set(ids)).join(':');
+};
+
 router.get('/', async (req, res) => {
     try {
         const chats = await ChatThread.find({ participants: req.user._id })
@@ -44,7 +80,39 @@ router.get('/', async (req, res) => {
             .sort({ lastMessageAt: -1 })
             .lean({ virtuals: true });
 
-        const formattedChats = chats.map(chat => formatChatSummary(chat, req.user._id));
+        const deduped = new Map();
+        const updates = [];
+
+        chats.forEach(chat => {
+            const key = chat.participantsKey || deriveParticipantsKey(chat) || (chat._id && chat._id.toString());
+            if (!chat.participantsKey && key) {
+                updates.push(ChatThread.updateOne({ _id: chat._id }, { $set: { participantsKey: key } }));
+            }
+
+            if (!key) {
+                deduped.set(chat._id.toString(), chat);
+                return;
+            }
+
+            const existing = deduped.get(key);
+            if (!existing) {
+                deduped.set(key, chat);
+                return;
+            }
+
+            const existingTime = existing.lastMessageAt ? new Date(existing.lastMessageAt).getTime() : 0;
+            const candidateTime = chat.lastMessageAt ? new Date(chat.lastMessageAt).getTime() : 0;
+
+            if (candidateTime >= existingTime) {
+                deduped.set(key, chat);
+            }
+        });
+
+        if (updates.length > 0) {
+            await Promise.allSettled(updates);
+        }
+
+        const formattedChats = Array.from(deduped.values()).map(chat => formatChatSummary(chat, req.user._id));
 
         res.json({ chats: formattedChats });
     } catch (error) {
@@ -69,6 +137,10 @@ router.post('/', [
         const participantObjectId = new mongoose.Types.ObjectId(participantId);
         const currentUserId = req.user._id;
         const participantIds = [currentUserId, participantObjectId];
+        const participantsKey = participantIds
+            .map(id => id.toString())
+            .sort()
+            .join(':');
 
         if (participantObjectId.toString() === currentUserId.toString()) {
             return res.status(400).json({ error: 'Cannot start a chat with yourself' });
@@ -79,15 +151,13 @@ router.post('/', [
             return res.status(404).json({ error: 'Participant not found' });
         }
 
-        let chat = await ChatThread.findOne({
-            participants: { $all: participantIds },
-            'participants.2': { $exists: false }
-        })
+        let chat = await ChatThread.findOne({ participantsKey })
             .populate('participants', 'name email');
 
         if (!chat) {
             chat = new ChatThread({
                 participants: participantIds,
+                participantsKey,
                 messages: [],
                 lastMessageAt: new Date()
             });

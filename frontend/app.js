@@ -280,11 +280,14 @@ async function apiRequest(endpoint, options = {}) {
         }
         const response = await fetch(url, config);
         const data = await response.json();
-        
+
         console.log(`API response from ${endpoint}:`, { status: response.status, ok: response.ok, data });
 
         if (!response.ok) {
-            throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            const error = new Error(data.error || `HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            error.responseData = data;
+            throw error;
         }
 
         return data;
@@ -306,6 +309,13 @@ async function login(email, password) {
         localStorage.setItem('user', JSON.stringify(currentUser));
         return data;
     } catch (error) {
+        if (error.responseData && error.responseData.requiresVerification) {
+            error.requiresVerification = true;
+            error.email = error.responseData.email;
+            error.emailDelivery = error.responseData.emailDelivery;
+            error.smtpConfigured = error.responseData.smtpConfigured;
+        }
+
         throw error;
     }
 }
@@ -319,19 +329,21 @@ async function signup(name, email, password) {
         });
 
         console.log('Signup successful:', data);
-        currentUser = data.user;
-        localStorage.setItem('user', JSON.stringify(currentUser));
         return data;
     } catch (error) {
         console.error('Signup API error:', error);
-        
+
         // Provide more specific error messages
         if (error.message && error.message.includes('already exists')) {
             throw new Error('User with this email already exists');
         } else if (error.message && error.message.includes('Validation failed')) {
             throw new Error('Validation failed: Please check your input');
         }
-        
+
+        if (error.responseData && error.responseData.error) {
+            throw new Error(error.responseData.error);
+        }
+
         throw error;
     }
 }
@@ -346,6 +358,77 @@ async function logout() {
         // Still clear local state even if API call fails
         currentUser = null;
         localStorage.removeItem('user');
+    }
+}
+
+function hideVerificationNotice() {
+    const container = document.getElementById('verification-notice');
+    if (container) {
+        container.classList.add('hidden');
+        container.innerHTML = '';
+    }
+}
+
+function renderVerificationNotice(email, deliveryStatus = 'sent', smtpConfigured = true) {
+    const container = document.getElementById('verification-notice');
+    if (!container) {
+        return;
+    }
+
+    const statusMessage = !smtpConfigured
+        ? 'Email delivery is not configured. Contact support to get verified.'
+        : deliveryStatus === 'failed'
+            ? 'We could not send the verification email. Try again in a moment.'
+            : deliveryStatus === 'skipped'
+                ? 'Email delivery is disabled. We generated a verification link for when email is available.'
+                : 'We sent a fresh verification email to your inbox.';
+
+    container.classList.remove('hidden');
+    container.innerHTML = `
+        <div class="verification-card">
+            <p><strong>Verify your email to continue.</strong></p>
+            <p>${escapeHtml(statusMessage)}</p>
+            <p class="verification-email">${escapeHtml(email)}</p>
+            <button type="button" class="btn btn--secondary btn--sm" id="resend-verification-btn">Resend verification</button>
+        </div>
+    `;
+
+    const button = container.querySelector('#resend-verification-btn');
+    if (button) {
+        if (!smtpConfigured) {
+            button.disabled = true;
+            button.classList.add('btn--disabled');
+        } else {
+            button.addEventListener('click', async () => {
+                button.disabled = true;
+                button.textContent = 'Sending…';
+                try {
+                    const result = await resendVerificationEmail(email);
+                    const message = result?.message || 'Verification email sent!';
+                    showAlert(message, 'success');
+                    renderVerificationNotice(email, result?.emailDelivery || 'sent', result?.smtpConfigured !== false);
+                } catch (error) {
+                    showAlert(error.message || 'Failed to send verification email', 'error');
+                    button.disabled = false;
+                    button.textContent = 'Resend verification';
+                }
+            });
+        }
+    }
+}
+
+async function resendVerificationEmail(email) {
+    try {
+        return await apiRequest('/auth/resend-verification', {
+            method: 'POST',
+            body: JSON.stringify({ email })
+        });
+    } catch (error) {
+        console.error('Resend verification error:', error);
+        if (error.responseData && error.responseData.error) {
+            throw new Error(error.responseData.error);
+        }
+        throw error;
     }
 }
 
@@ -399,7 +482,8 @@ async function createSession(sessionData) {
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
                 meetLink: sessionData.meetLink || '',
-                description: sessionData.description || ''
+                description: sessionData.description || '',
+                createMeet: Boolean(sessionData.createMeet)
             })
         });
 
@@ -444,7 +528,8 @@ async function updateSession(sessionId, sessionData) {
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
                 meetLink: sessionData.meetLink || '',
-                description: sessionData.description || ''
+                description: sessionData.description || '',
+                createMeet: Boolean(sessionData.createMeet)
             })
         });
 
@@ -1026,6 +1111,10 @@ function showCreateSession() {
     hideAllPages();
     document.getElementById('create-session-page').classList.remove('hidden');
     currentView = 'create-session';
+    const createMeetCheckbox = document.getElementById('session-generate-meet');
+    if (createMeetCheckbox) {
+        createMeetCheckbox.checked = false;
+    }
 }
 
 function showEditSession(sessionId) {
@@ -1052,11 +1141,19 @@ async function handleLogin(event) {
     try {
         showAlert('Logging in...', 'info');
         await login(email, password);
+        hideVerificationNotice();
         showAlert('Login successful!', 'success');
         showDashboard();
     } catch (error) {
         console.error('Login error:', error);
-        showAlert('Login failed: ' + (error.message || 'Unknown error'), 'error');
+        if (error.requiresVerification) {
+            showAlert('Please verify your email before signing in.', 'warning');
+            renderVerificationNotice(error.email || email, error.emailDelivery, error.smtpConfigured);
+            return;
+        }
+
+        const message = error.responseData?.error || error.message || 'Unknown error';
+        showAlert('Login failed: ' + message, 'error');
     }
 }
 
@@ -1083,19 +1180,24 @@ async function handleSignup(event) {
 
     try {
         showAlert('Creating account...', 'info');
-        await signup(name, email, password);
-        showAlert('Account created successfully!', 'success');
-        
+        const result = await signup(name, email, password);
+        showAlert('Account created successfully! Check your email to verify your account.', 'success');
+
         // Clear the form on success
         form.reset();
-        
-        showDashboard();
+
+        showLogin();
+        const loginEmail = document.getElementById('login-email');
+        if (loginEmail) {
+            loginEmail.value = email;
+        }
+        renderVerificationNotice(email, result?.emailDelivery || 'sent', result?.smtpConfigured !== false);
     } catch (error) {
         console.error('Signup error:', error);
-        
+
         // Handle specific error cases
-        let errorMessage = 'Signup failed: ' + (error.message || 'Unknown error');
-        
+        let errorMessage = 'Signup failed: ' + (error.responseData?.error || error.message || 'Unknown error');
+
         if (error.message && error.message.includes('already exists')) {
             errorMessage = 'This email is already registered. Please use a different email or try logging in instead.';
             // Clear only the email field for duplicate email errors and add error styling
@@ -1128,7 +1230,8 @@ async function handleCreateSession(event) {
         date: document.getElementById('session-date').value,
         time: document.getElementById('session-time').value,
         maxParticipants: document.getElementById('session-capacity').value,
-        meetLink: document.getElementById('session-meet-link').value
+        meetLink: document.getElementById('session-meet-link').value,
+        createMeet: document.getElementById('session-generate-meet').checked
     };
 
     try {
@@ -1165,7 +1268,8 @@ async function handleEditSession(event) {
         date: document.getElementById('edit-session-date').value,
         time: document.getElementById('edit-session-time').value,
         maxParticipants: document.getElementById('edit-session-capacity').value,
-        meetLink: document.getElementById('edit-session-meet-link').value
+        meetLink: document.getElementById('edit-session-meet-link').value,
+        createMeet: document.getElementById('edit-session-generate-meet').checked
     };
 
     try {
@@ -1240,6 +1344,10 @@ function loadSessionForEdit(sessionId) {
     
     document.getElementById('edit-session-capacity').value = session.maxParticipants;
     document.getElementById('edit-session-meet-link').value = session.meetLink || '';
+    const editGenerateMeet = document.getElementById('edit-session-generate-meet');
+    if (editGenerateMeet) {
+        editGenerateMeet.checked = Boolean(session.autoGeneratedMeetLink);
+    }
 }
 
 async function handleEnrollInSession(sessionId) {
@@ -1951,6 +2059,10 @@ function getChatSummaryPartnerKey(chat) {
         return chat?.id || chat?._id || null;
     }
 
+    if (chat.participantsKey) {
+        return chat.participantsKey;
+    }
+
     const currentId = getCurrentUserId();
     if (!currentId) {
         return chat.id || chat._id || null;
@@ -1981,7 +2093,7 @@ function dedupeChatsByPartner(chatSummaries, preferredChatId = null) {
             return;
         }
 
-        const partnerKey = getChatSummaryPartnerKey(chat) || (chat.id || chat._id || Math.random().toString(36).slice(2));
+        const partnerKey = chat.participantsKey || getChatSummaryPartnerKey(chat) || (chat.id || chat._id || Math.random().toString(36).slice(2));
         const normalizedKey = partnerKey ? partnerKey.toString() : (chat.id || chat._id);
         const existing = deduped.get(normalizedKey);
 
@@ -2604,9 +2716,9 @@ function displaySessions(sessionsList, container, isOwner = false) {
         if (isCreator) {
             actionButton = `<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`;
         } else if (isEnrolled) {
-            actionButton = '<span class="enrollment-status">Enrolled</span>';
+            actionButton = '<button class="btn btn--enrolled btn--sm" disabled>Enrolled</button>';
         } else if (isFull) {
-            actionButton = '<span class="enrollment-status">Full</span>';
+            actionButton = '<button class="btn btn--full btn--sm" disabled>Full</button>';
         } else if (session.meetLink && session.status === 'ongoing') {
             actionButton = `<button class="btn btn--primary btn--sm" onclick="window.open('${session.meetLink}', '_blank')">Join Now</button>`;
         } else {
