@@ -1,7 +1,6 @@
 const Session = require('../models/Session');
 const { sendSystemMessage } = require('./systemMessageService');
-
-const JOIN_WINDOW_MINUTES = 15;
+const { JOIN_WINDOW_MINUTES, computeJoinWindow } = require('../utils/sessionJoin');
 
 function formatDateTime(date) {
     if (!(date instanceof Date)) {
@@ -21,12 +20,8 @@ function formatDateTime(date) {
 }
 
 function getJoinOpensAt(session) {
-    const start = new Date(session.date);
-    if (Number.isNaN(start.getTime())) {
-        return null;
-    }
-
-    return new Date(start.getTime() - JOIN_WINDOW_MINUTES * 60 * 1000);
+    const { joinOpensAt } = computeJoinWindow(session);
+    return joinOpensAt || null;
 }
 
 function collectSessionRecipientIds(session) {
@@ -100,12 +95,9 @@ const notifySessionStart = async (sessionId) => {
 
         const startTime = formatDateTime(session.date);
         const messageParts = [
-            `It's time! "${session.topic}" is starting now.`
+            `Feynman here—"${session.topic}" is starting now.`,
+            'Open the session in your dashboard and tap Join to enter the live room.'
         ];
-
-        if (session.meetLink) {
-            messageParts.push(`Join here: ${session.meetLink}`);
-        }
 
         await dispatchSystemNotifications(session, messageParts.join(' '));
 
@@ -131,16 +123,16 @@ const notifySessionReminder = async (sessionId) => {
         const joinOpensLabel = joinOpensAt ? formatDateTime(joinOpensAt) : null;
 
         const messageParts = [
-            `Reminder: "${session.topic}" starts at ${sessionTime}.`
+            `Feynman reminder: "${session.topic}" starts at ${sessionTime}.`
         ];
 
-        if (session.meetLink && joinOpensLabel) {
-            messageParts.push(`You'll be able to join from ${joinOpensLabel}: ${session.meetLink}`);
-        } else if (session.meetLink) {
-            messageParts.push(`A join link is available: ${session.meetLink}`);
+        if (joinOpensLabel) {
+            messageParts.push(`The room unlocks ${JOIN_WINDOW_MINUTES} minutes early at ${joinOpensLabel}.`);
         } else {
-            messageParts.push('The host will share the meeting link before it begins.');
+            messageParts.push('The room unlocks 5 minutes early in your Sessions tab.');
         }
+
+        messageParts.push('Look for the Join button inside the session when the window opens.');
 
         await dispatchSystemNotifications(session, messageParts.join(' '));
 
@@ -162,16 +154,16 @@ const notifySessionEnrollment = async (session, user) => {
         const joinOpensLabel = joinOpensAt ? formatDateTime(joinOpensAt) : null;
 
         const parts = [
-            `You're enrolled in "${session.topic}" scheduled for ${sessionTime}.`
+            `Feynman here—you're enrolled in "${session.topic}" scheduled for ${sessionTime}.`
         ];
 
-        if (session.meetLink && joinOpensLabel) {
-            parts.push(`The join link opens ${JOIN_WINDOW_MINUTES} minutes early at ${joinOpensLabel}.`);
-        } else if (session.meetLink) {
-            parts.push('The join link will unlock shortly before the session starts.');
+        if (joinOpensLabel) {
+            parts.push(`Come back ${JOIN_WINDOW_MINUTES} minutes early at ${joinOpensLabel} to hit Join.`);
         } else {
-            parts.push('Watch your messages for the meeting link before it begins.');
+            parts.push('Come back five minutes early and hit Join from your Sessions tab.');
         }
+
+        parts.push('I will remind you right before we begin.');
 
         const targetUserId = user._id || user.id || user;
         await sendSystemMessage(targetUserId, parts.join(' '));

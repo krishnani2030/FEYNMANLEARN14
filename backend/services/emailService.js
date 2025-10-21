@@ -70,8 +70,8 @@ function buildSessionEnrollmentEmail({
     const safeJoinMinutes = joinOpensMinutes || 15;
 
     const joinMessage = meetLink
-        ? `<p>You can join the meeting a few minutes early using this link:<br /><a href="${meetLink}">${meetLink}</a></p>`
-        : '<p>The host will share a Google Meet link shortly before the session begins.</p>';
+        ? `<p>If the host prefers an external call, join using this link:<br /><a href="${meetLink}">${meetLink}</a></p>`
+        : `<p>Open the Feynman Learn dashboard ${safeJoinMinutes} minutes early and tap <strong>Join</strong> to enter the live room.</p>`;
 
     return {
         subject: `You're enrolled: ${safeTopic}`,
@@ -93,7 +93,32 @@ async function sendSessionEnrollmentEmail(details) {
     return sendMail({ to: details.email, subject, html });
 }
 
+function buildVerificationEmail({ name, code }) {
+    const safeName = name || 'there';
+    const safeCode = code || '000000';
+
+    return {
+        subject: 'Verify your Feynman Learn email',
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+                <h2 style="color: #1d4ed8;">Welcome${safeName ? `, ${safeName}` : ''}!</h2>
+                <p>Use the one-time code below to verify your email address:</p>
+                <p style="font-size: 24px; font-weight: bold; letter-spacing: 4px;">${safeCode}</p>
+                <p>This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
+                <p>Thanks for joining Feynman Learn!</p>
+            </div>
+        `
+    };
+}
+
+async function sendVerificationEmail(details) {
+    const { subject, html } = buildVerificationEmail(details);
+    return sendMail({ to: details.email, subject, html });
+}
+
 module.exports = {
     hasSmtpConfig,
-    sendSessionEnrollmentEmail
+    sendSessionEnrollmentEmail,
+    sendVerificationEmail,
+    buildVerificationEmail
 };

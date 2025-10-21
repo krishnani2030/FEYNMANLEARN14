@@ -4,7 +4,7 @@ const User = require('../models/User');
 const ChatThread = require('../models/ChatThread');
 
 const DEFAULT_SYSTEM_EMAIL = process.env.SYSTEM_USER_EMAIL || 'notifications@feynmanlearn.local';
-const DEFAULT_SYSTEM_NAME = process.env.SYSTEM_USER_NAME || 'Feynman Learn';
+const DEFAULT_SYSTEM_NAME = process.env.SYSTEM_USER_NAME || 'Feynman';
 const DEFAULT_SYSTEM_PASSWORD = process.env.SYSTEM_USER_PASSWORD || 'FeynmanLearnSystem!23';
 
 let cachedSystemUser = null;

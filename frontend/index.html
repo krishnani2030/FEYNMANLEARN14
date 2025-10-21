@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
     <div id="app">
@@ -61,7 +61,7 @@
                             <div class="step">
                                 <div class="step-number">3</div>
                                 <h3>Join & Explain</h3>
-                                <p>Meet on Google Meet, explain simply, deepen understanding</p>
+                                <p>Enter the built-in live room, explain simply, deepen understanding</p>
                             </div>
                         </div>
                     </div>
@@ -99,7 +99,7 @@
                             </div>
                             <div class="faq-item">
                                 <h3>How do sessions run?</h3>
-                                <p>Sessions are hosted on Google Meet where the creator explains their topic to enrolled participants. It's collaborative learning through teaching.</p>
+                                <p>Sessions run inside Feynman Learn's live room. The host and participants join from the dashboard a few minutes before start time to collaborate in real-time.</p>
                             </div>
                             <div class="faq-item">
                                 <h3>Is it free?</h3>
@@ -129,24 +129,77 @@
         <!-- Login Page -->
         <div id="login-page" class="page hidden">
             <div class="auth-container">
-                <div class="auth-card">
+                <div class="auth-card" id="login-card">
                     <div class="auth-header">
                         <h2>Welcome back</h2>
-                        <p>Use your Google account to continue</p>
+                        <p>Log in with your email to continue learning.</p>
                     </div>
-                    <div class="google-signin-wrapper">
-                        <div id="google-signin-button" class="google-signin-button"></div>
-                        <p class="auth-hint">We'll create your Feynman Learn profile after you sign in with Google.</p>
-                        <div id="google-signin-error" class="auth-error hidden"></div>
-                    </div>
+                    <form id="login-form" class="auth-form">
+                        <div class="form-group">
+                            <label for="login-email">Email</label>
+                            <input type="email" id="login-email" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="login-password">Password</label>
+                            <input type="password" id="login-password" class="form-control" required minlength="6">
+                        </div>
+                        <button type="submit" class="btn btn--primary btn--full">Log In</button>
+                    </form>
+                    <div id="login-error" class="auth-error hidden"></div>
                     <div class="auth-footer">
-                        <p><a href="#" onclick="showLandingPage()">â Back to home</a></p>
+                        <p>New here? <button type="button" class="link-button" id="show-register">Create an account</button></p>
+                        <p><a href="#" onclick="showLandingPage()">&larr; Back to home</a></p>
+                    </div>
+                </div>
+
+                <div class="auth-card hidden" id="register-card">
+                    <div class="auth-header">
+                        <h2>Create your account</h2>
+                        <p>We'll send a one-time code to verify your email.</p>
+                    </div>
+                    <form id="register-form" class="auth-form">
+                        <div class="form-group">
+                            <label for="register-name">Full name</label>
+                            <input type="text" id="register-name" class="form-control" required minlength="2" maxlength="50">
+                        </div>
+                        <div class="form-group">
+                            <label for="register-email">Email</label>
+                            <input type="email" id="register-email" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="register-password">Password</label>
+                            <input type="password" id="register-password" class="form-control" required minlength="6">
+                        </div>
+                        <button type="submit" class="btn btn--primary btn--full">Sign Up</button>
+                    </form>
+                    <div id="register-error" class="auth-error hidden"></div>
+                    <div class="auth-footer">
+                        <p>Already have an account? <button type="button" class="link-button" id="show-login">Log in</button></p>
+                    </div>
+                </div>
+
+                <div class="auth-card hidden" id="verify-card">
+                    <div class="auth-header">
+                        <h2>Check your email</h2>
+                        <p>Enter the 6-digit code we sent to <span id="verify-email-value"></span>.</p>
+                    </div>
+                    <form id="verify-form" class="auth-form">
+                        <div class="form-group">
+                            <label for="verify-code">Verification code</label>
+                            <input type="text" id="verify-code" class="form-control" inputmode="numeric" pattern="\d{6}" maxlength="6" required>
+                        </div>
+                        <button type="submit" class="btn btn--primary btn--full">Verify email</button>
+                    </form>
+                    <div id="verify-error" class="auth-error hidden"></div>
+                    <div class="auth-footer auth-footer--stacked">
+                        <button type="button" class="link-button" id="resend-code">Resend code</button>
+                        <button type="button" class="link-button" id="verify-back">Back to login</button>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Dashboard Page -->
+        <!-- Dashboard Page -->        <!-- Dashboard Page -->
         <div id="dashboard-page" class="page hidden">
             <header class="dashboard-header">
                 <div class="container">
@@ -338,22 +391,9 @@
                         </div>
                         
                         <div class="form-group">
-                            <label class="form-label" for="session-meet-link">Google Meet Link (Optional)</label>
-                            <input type="url" id="session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
-                        </div>
-                        <div class="form-group form-group--checkbox">
-                            <label class="checkbox">
-                                <input type="checkbox" id="session-generate-meet">
-                                <span>Generate a Google Meet link for me</span>
-                            </label>
-                            <p class="form-helper">We'll create the meeting automatically when you save.</p>
-                        </div>
-                        <div class="form-group form-group--checkbox">
-                            <label class="checkbox">
-                                <input type="checkbox" id="session-generate-meet">
-                                <span>Generate a Google Meet link for me</span>
-                            </label>
-                            <p class="form-helper">We'll create the meeting automatically when you save.</p>
+                            <label class="form-label" for="session-meet-link">External Meeting Link (Optional)</label>
+                            <input type="url" id="session-meet-link" class="form-control" placeholder="https://example.com/my-session">
+                            <p class="form-helper">Only needed if you want to share a separate call link.</p>
                         </div>
 
                         <button type="submit" class="btn btn--primary btn--lg">Create Session</button>
@@ -404,15 +444,9 @@
                         </div>
                         
                         <div class="form-group">
-                            <label class="form-label" for="edit-session-meet-link">Google Meet Link (Optional)</label>
-                            <input type="url" id="edit-session-meet-link" class="form-control" placeholder="https://meet.google.com/...">
-                        </div>
-                        <div class="form-group form-group--checkbox">
-                            <label class="checkbox">
-                                <input type="checkbox" id="edit-session-generate-meet">
-                                <span>Refresh Google Meet link automatically</span>
-                            </label>
-                            <p class="form-helper">Use this to generate or update a Meet link for the session.</p>
+                            <label class="form-label" for="edit-session-meet-link">External Meeting Link (Optional)</label>
+                            <input type="url" id="edit-session-meet-link" class="form-control" placeholder="https://example.com/my-session">
+                            <p class="form-helper">Leave blank to use the built-in live room.</p>
                         </div>
                         
                         <div class="form-actions">
@@ -452,6 +486,34 @@
                 </div>
                 <div class="modal-footer">
                     <div id="modal-actions"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="call-overlay" class="call-overlay hidden">
+            <div class="call-window">
+                <div class="call-header">
+                    <div class="call-header-titles">
+                        <h3 id="call-session-title">Live session</h3>
+                        <p id="call-session-subtitle"></p>
+                    </div>
+                    <div class="call-header-actions">
+                        <button type="button" class="btn btn--danger btn--sm" id="leave-call-button">Leave</button>
+                    </div>
+                </div>
+                <div class="call-body">
+                    <div class="call-grid" id="call-participants">
+                        <div class="call-participant local" id="local-participant">
+                            <div class="call-video-frame">
+                                <video id="local-video" autoplay playsinline muted></video>
+                                <div class="call-name">You</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="call-footer">
+                    <button type="button" class="btn btn--secondary btn--sm" id="toggle-mic-button">Mute</button>
+                    <button type="button" class="btn btn--secondary btn--sm" id="toggle-camera-button">Stop Video</button>
                 </div>
             </div>
         </div>

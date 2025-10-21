@@ -8,12 +8,12 @@ A complete peer-to-peer learning platform using the Feynman Technique with black
 
 ### Key Features
 
-- **Peer-to-Peer Learning**: Create sessions to teach topics or join others' sessions to learn
-- **Session Management**: Full CRUD operations with enrollment system
-- **Real-time Notifications**: Automated reminders and session start alerts
-- **Black & White Design**: Clean, distraction-free minimalist interface
-- **Authentication**: Secure JWT-based user management
-- **Admin Panel**: User and session management capabilities
+- **Peer-to-Peer Learning**: Create sessions to teach topics or join others' sessions to learn.
+- **Session Management**: Full CRUD operations with enrollment, reminders, and discussion threads.
+- **Live WebRTC Rooms**: Join browser-based calls five minutes before start time—no external meeting link required.
+- **Email OTP Verification**: One-time passwords ensure every account is verified before accessing the dashboard.
+- **System Chat Notifications**: Automated “Feynman” messages confirm enrollments and remind learners right before class.
+- **Black & White Design**: Clean, distraction-free minimalist interface.
 
 ## 🏗️ Architecture
 
@@ -26,6 +26,7 @@ A complete peer-to-peer learning platform using the Feynman Technique with black
 - **Express.js** - RESTful API server
 - **MongoDB** - Document database with Mongoose ODM
 - **JWT Authentication** - Secure token-based auth with HTTP-only cookies
+- **Socket.io & WebRTC** - Live session signaling with peer-to-peer media streams
 - **Cron Jobs** - Automated session status updates and notifications
 - **Rate Limiting** - Security and abuse prevention
 
@@ -53,7 +54,7 @@ A complete peer-to-peer learning platform using the Feynman Technique with black
    ```bash
    cd backend
    cp .env.example .env
-   # Edit .env with your MongoDB URI and JWT secrets
+   # Edit .env with your MongoDB URI, JWT secret, SMTP credentials, and optional WebRTC secret
    ```
 
 4. **Seed the database (optional):**
@@ -119,30 +120,34 @@ The frontend features a sophisticated **black and white design**:
 
 ## 🔐 Authentication
 
-Feynman Learn now uses **Google Sign-In** exclusively. When a user authenticates
-with Google, the backend issues a short-lived JWT that is stored in an
-HTTP-only cookie. Legacy email/password accounts are removed automatically at
-startup, so make sure to configure a Google OAuth Client ID before launching
-the server.
+Feynman Learn ships with classic **email/password authentication** hardened by
+mandatory one-time password (OTP) verification. New users register with their
+email address, receive a 6-digit code via SMTP, and must verify the address
+before gaining dashboard access. Once verified, the backend issues an HTTP-only
+JWT cookie that powers subsequent requests.
 
 ### Security Features:
-- Google Identity Services for login
-- JWT tokens in HTTP-only cookies
-- Rate limiting on auth endpoints
-- Input validation and sanitization
+- OTP email verification with configurable expiry (10 minutes by default).
+- JWT tokens stored in HTTP-only cookies to protect against XSS.
+- Rate limiting on auth endpoints to mitigate brute force attacks.
+- Input validation and sanitisation across every route.
 
 ## 📡 API Endpoints
 
 ### Authentication
-- `POST /api/auth/google` - Exchange a Google credential for a session
-- `POST /api/auth/logout` - Logout user
-- `GET /api/auth/me` - Get current user
+- `POST /api/auth/register` - Create a new account and trigger OTP verification
+- `POST /api/auth/login` - Log in with verified email/password credentials
+- `POST /api/auth/verify-email` - Submit the 6-digit OTP to activate the account
+- `POST /api/auth/resend-verification` - Resend the OTP email (rate limited)
+- `POST /api/auth/logout` - Clear the auth cookie and sign out
+- `GET /api/auth/me` - Fetch the current authenticated user
 
 ### Sessions
-- `GET /api/sessions` - List all sessions
-- `POST /api/sessions` - Create new session
-- `GET /api/sessions/mine` - Get user's sessions
-- `POST /api/sessions/:id/enroll` - Enroll in session
+- `GET /api/sessions` - List all sessions with join-window metadata
+- `POST /api/sessions` - Create a new teaching session
+- `GET /api/sessions/mine` - Get the sessions you created
+- `POST /api/sessions/:id/enroll` - Enroll in a session and trigger notifications
+- `POST /api/sessions/:id/webrtc-token` - Obtain a signed token to enter the live room
 - `GET /api/health` - Health check
 
 ## 🚀 Deployment
@@ -172,12 +177,14 @@ The backend serves the frontend in production mode.
 | `JWT_EXPIRES_IN` | JWT expiration window (e.g. `7d`) | No (default: `7d`) |
 | `PORT` | Server port | No (default: 5000) |
 | `CLIENT_URL` | Frontend URL for CORS | No (default: http://localhost:3000) |
-| `GOOGLE_OAUTH_CLIENT_ID` | Google OAuth Client ID (or legacy `GOOGLE_CLIENT_ID`) | Yes |
-| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Service account email for Calendar API | Required for Meet sync |
-| `GOOGLE_PRIVATE_KEY` | Private key for the service account (escaped newlines) | Required for Meet sync |
-| `GOOGLE_CALENDAR_ID` | Calendar ID where Meet events are created | Required for Meet sync |
-| `GOOGLE_CALENDAR_TIMEZONE` | Calendar timezone (e.g. `UTC`) | No (default: `UTC`) |
-| `EMAIL_SERVICE`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM` | SMTP configuration for enrollment/reminder emails | Required for email notifications |
+| `SMTP_HOST` | SMTP host used to deliver OTP and reminder emails | Required for sending email |
+| `SMTP_PORT` | SMTP port (e.g. `587`) | Required for sending email |
+| `SMTP_SECURE` | Use TLS (set to `true` for port 465) | No (default: `false`) |
+| `SMTP_USER` | SMTP username | Required for sending email |
+| `SMTP_PASSWORD` | SMTP password or app password | Required for sending email |
+| `SMTP_FROM` | From address shown in emails | No (defaults to `SMTP_USER`) |
+| `WEBRTC_SECRET` | Overrides token signing secret for live sessions | No (defaults to derived value) |
+| `SYSTEM_USER_EMAIL`, `SYSTEM_USER_NAME`, `SYSTEM_USER_PASSWORD` | Optional identity for the “Feynman” system chat user | No |
 
 ## 🛠️ Development
 
@@ -199,7 +206,7 @@ The backend serves the frontend in production mode.
 - Create teaching sessions with topic, level, date/time
 - Enroll in others' sessions with capacity limits
 - Automatic status updates (upcoming → ongoing → completed)
-- Google Meet integration for video sessions
+- Built-in WebRTC live rooms with five-minute early access
 
 ### Notification System
 - Automated reminders 15 minutes before sessions

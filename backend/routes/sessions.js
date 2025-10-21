@@ -2,13 +2,11 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const Session = require('../models/Session');
 const { authMiddleware, optionalAuth } = require('../middleware/auth');
-const { hasGoogleMeetConfig, createMeetConference, updateMeetConference, syncEventAttendees } = require('../services/googleMeetService');
 const { notifySessionEnrollment } = require('../services/notificationService');
-const { sendSessionEnrollmentEmail, hasSmtpConfig } = require('../services/emailService');
+const { createWebrtcToken } = require('../services/webrtcTokenService');
+const { JOIN_WINDOW_MINUTES, computeJoinWindow, canJoinSession } = require('../utils/sessionJoin');
 
 const router = express.Router();
-
-const JOIN_WINDOW_MINUTES = 15;
 
 function normalizeId(value) {
     if (!value) {
@@ -68,69 +66,21 @@ function computeJoinAvailability(sessionObj) {
         joinWindowMinutes: JOIN_WINDOW_MINUTES
     };
 
-    if (!sessionObj || !sessionObj.date || !sessionObj.meetLink) {
+    if (!sessionObj) {
         return defaults;
     }
 
-    const start = new Date(sessionObj.date);
-    if (Number.isNaN(start.getTime())) {
+    const { joinOpensAt, joinClosesAt } = computeJoinWindow(sessionObj);
+    if (!joinOpensAt || !joinClosesAt) {
         return defaults;
-    }
-
-    const durationMinutes = Number(sessionObj.duration) || 60;
-    const joinOpensAt = new Date(start.getTime() - JOIN_WINDOW_MINUTES * 60000);
-    const joinClosesAt = new Date(start.getTime() + Math.max(durationMinutes, JOIN_WINDOW_MINUTES) * 60000);
-    const now = new Date();
-
-    let canJoinNow = false;
-    if (sessionObj.status === 'ongoing' && now <= joinClosesAt) {
-        canJoinNow = true;
-    } else if (sessionObj.status !== 'completed' && now >= joinOpensAt && now <= joinClosesAt) {
-        canJoinNow = true;
     }
 
     return {
-        canJoinNow,
+        canJoinNow: canJoinSession(sessionObj),
         joinOpensAt: joinOpensAt.toISOString(),
         joinClosesAt: joinClosesAt.toISOString(),
         joinWindowMinutes: JOIN_WINDOW_MINUTES
     };
-}
-
-function buildAttendeeFromUser(user) {
-    if (!user || !user.email) {
-        return null;
-    }
-
-    return {
-        email: user.email,
-        displayName: user.name || user.email
-    };
-}
-
-function collectAttendees(session) {
-    const attendees = [];
-
-    if (!session) {
-        return attendees;
-    }
-
-    if (session.creator) {
-        const creatorAttendee = buildAttendeeFromUser(session.creator);
-        if (creatorAttendee) {
-            attendees.push(creatorAttendee);
-        }
-    }
-
-    (session.participants || []).forEach(participant => {
-        const user = participant && participant.user ? participant.user : participant;
-        const attendee = buildAttendeeFromUser(user);
-        if (attendee) {
-            attendees.push(attendee);
-        }
-    });
-
-    return attendees;
 }
 
 function formatSessionResponse(session, currentUser = null) {
@@ -143,6 +93,8 @@ function formatSessionResponse(session, currentUser = null) {
     if (sessionObj._id && !sessionObj.id) {
         sessionObj.id = sessionObj._id.toString();
     }
+
+    sessionObj.roomCode = sessionObj.id;
 
     const joinInfo = computeJoinAvailability(sessionObj);
 
@@ -210,7 +162,6 @@ router.post('/', authMiddleware, [
             return res.status(400).json({ error: 'Session date must be in the future' });
         }
 
-        const requestedMeetLink = (req.body.meetLink || '').trim();
         const parsedMaxParticipants = parseInt(req.body.maxParticipants, 10);
         const parsedDuration = req.body.duration ? parseInt(req.body.duration, 10) : undefined;
 
@@ -227,45 +178,7 @@ router.post('/', authMiddleware, [
             sessionPayload.duration = parsedDuration;
         }
 
-        if (requestedMeetLink) {
-            sessionPayload.meetLink = requestedMeetLink;
-        }
-
         const session = new Session(sessionPayload);
-
-        const shouldCreateMeet = req.body.createMeet === true || req.body.createMeet === 'true';
-
-        const hostAttendee = buildAttendeeFromUser(req.user);
-        const initialAttendees = hostAttendee ? [hostAttendee] : [];
-
-        if ((shouldCreateMeet || !requestedMeetLink) && hasGoogleMeetConfig()) {
-            try {
-                const startDateIso = sessionDate.toISOString();
-                const durationMinutes = session.duration || 60;
-                const endDateIso = new Date(sessionDate.getTime() + durationMinutes * 60000).toISOString();
-                const { meetLink, eventId, calendarId } = await createMeetConference({
-                    topic: session.topic,
-                    description: session.description,
-                    startDate: startDateIso,
-                    endDate: endDateIso,
-                    attendees: initialAttendees
-                });
-
-                if (meetLink) {
-                    session.meetLink = meetLink;
-                }
-                session.autoGeneratedMeetLink = true;
-                session.googleEventId = eventId;
-                session.googleCalendarId = calendarId;
-            } catch (error) {
-                console.error('Google Meet creation error:', error);
-                if (shouldCreateMeet) {
-                    return res.status(502).json({ error: 'Failed to create Google Meet link' });
-                }
-            }
-        } else if (shouldCreateMeet && !hasGoogleMeetConfig()) {
-            return res.status(503).json({ error: 'Google Meet integration is not configured' });
-        }
 
         await session.save();
         await session.populate('creator', 'name email');
@@ -319,42 +232,58 @@ router.post('/:id/enroll', authMiddleware, async (req, res) => {
 
         await notifySessionEnrollment(session, req.user);
 
-        if (session.googleEventId && session.googleCalendarId && hasGoogleMeetConfig()) {
-            try {
-                await syncEventAttendees({
-                    eventId: session.googleEventId,
-                    calendarId: session.googleCalendarId,
-                    attendees: collectAttendees(session)
-                });
-            } catch (syncError) {
-                console.error('Failed to sync Google Meet attendees:', syncError);
-            }
-        }
-
-        if (req.user && req.user.email) {
-            const joinInfo = computeJoinAvailability(session);
-            try {
-                await sendSessionEnrollmentEmail({
-                    email: req.user.email,
-                    participantName: req.user.name,
-                    hostName: session.creator ? session.creator.name : 'Your host',
-                    sessionTopic: session.topic,
-                    sessionDate: session.date,
-                    meetLink: session.meetLink,
-                    joinOpensMinutes: joinInfo.joinWindowMinutes
-                });
-            } catch (emailError) {
-                if (hasSmtpConfig()) {
-                    console.error('Failed to send enrollment email:', emailError);
-                }
-            }
-        }
-
         res.json({ message: 'Successfully enrolled in session', session: responseSession });
 
     } catch (error) {
         console.error('Enrollment error:', error.message);
         res.status(400).json({ error: error.message });
+    }
+});
+
+router.post('/:id/webrtc-token', authMiddleware, async (req, res) => {
+    try {
+        const session = await Session.findById(req.params.id)
+            .populate('participants.user', 'name email')
+            .populate('creator', 'name email');
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+
+        const userId = req.user._id;
+        const isCreator = typeof session.isCreator === 'function'
+            ? session.isCreator(userId)
+            : session.creator && session.creator._id && session.creator._id.toString() === userId.toString();
+        const isEnrolled = typeof session.isUserEnrolled === 'function'
+            ? session.isUserEnrolled(userId)
+            : isUserInParticipants(session.participants, userId.toString());
+
+        if (!isCreator && !isEnrolled) {
+            return res.status(403).json({ error: 'You must be enrolled in this session to join the call.' });
+        }
+
+        if (!canJoinSession(session)) {
+            const { joinOpensAt, joinClosesAt } = computeJoinWindow(session);
+            return res.status(403).json({
+                error: 'The session room is not open right now.',
+                joinOpensAt: joinOpensAt ? joinOpensAt.toISOString() : null,
+                joinClosesAt: joinClosesAt ? joinClosesAt.toISOString() : null
+            });
+        }
+
+        const token = createWebrtcToken({
+            sessionId: session._id.toString(),
+            userId: userId.toString(),
+            name: req.user.name
+        });
+
+        res.json({
+            token,
+            joinWindowMinutes: JOIN_WINDOW_MINUTES
+        });
+    } catch (error) {
+        console.error('Failed to create WebRTC token:', error);
+        res.status(500).json({ error: 'Failed to prepare meeting room' });
     }
 });
 
@@ -400,84 +329,10 @@ router.put('/:id', authMiddleware, [
         }
 
         const updatedMeetLink = (req.body.meetLink || '').trim();
-        const wantsAutoMeet = req.body.createMeet === true || req.body.createMeet === 'true';
-
-        if (updatedMeetLink) {
-            session.meetLink = updatedMeetLink;
-            session.autoGeneratedMeetLink = false;
-            session.googleEventId = null;
-            session.googleCalendarId = null;
-        } else if (!wantsAutoMeet && !session.autoGeneratedMeetLink) {
-            session.meetLink = '';
-        }
-
-        const durationMinutes = session.duration || 60;
-        const startDateIso = session.date.toISOString();
-        const endDateIso = new Date(session.date.getTime() + durationMinutes * 60000).toISOString();
-
-        await session.populate('creator', 'name email');
-        await session.populate('participants.user', 'name email');
-        const attendeeList = collectAttendees(session);
-
-        if (wantsAutoMeet) {
-            if (!hasGoogleMeetConfig()) {
-                return res.status(503).json({ error: 'Google Meet integration is not configured' });
-            }
-
-            try {
-                if (session.googleEventId) {
-                    const { meetLink, eventId, calendarId } = await updateMeetConference({
-                        eventId: session.googleEventId,
-                        topic: session.topic,
-                        description: session.description,
-                        startDate: startDateIso,
-                        endDate: endDateIso,
-                        attendees: attendeeList
-                    });
-                    if (meetLink) {
-                        session.meetLink = meetLink;
-                    }
-                    session.googleEventId = eventId;
-                    session.googleCalendarId = calendarId;
-                    session.autoGeneratedMeetLink = true;
-                } else {
-                    const { meetLink, eventId, calendarId } = await createMeetConference({
-                        topic: session.topic,
-                        description: session.description,
-                        startDate: startDateIso,
-                        endDate: endDateIso,
-                        attendees: attendeeList
-                    });
-                    if (meetLink) {
-                        session.meetLink = meetLink;
-                    }
-                    session.googleEventId = eventId;
-                    session.googleCalendarId = calendarId;
-                    session.autoGeneratedMeetLink = true;
-                }
-            } catch (error) {
-                console.error('Google Meet sync error:', error);
-                return res.status(502).json({ error: 'Failed to synchronize Google Meet link' });
-            }
-        } else if (!updatedMeetLink && session.autoGeneratedMeetLink && session.googleEventId && hasGoogleMeetConfig()) {
-            try {
-                const { meetLink, eventId, calendarId } = await updateMeetConference({
-                    eventId: session.googleEventId,
-                    topic: session.topic,
-                    description: session.description,
-                    startDate: startDateIso,
-                    endDate: endDateIso,
-                    attendees: attendeeList
-                });
-                if (meetLink) {
-                    session.meetLink = meetLink;
-                }
-                session.googleEventId = eventId;
-                session.googleCalendarId = calendarId;
-            } catch (error) {
-                console.error('Google Meet update error:', error);
-            }
-        }
+        session.meetLink = updatedMeetLink;
+        session.autoGeneratedMeetLink = false;
+        session.googleEventId = null;
+        session.googleCalendarId = null;
 
         await session.save();
         await session.populate('creator', 'name email');

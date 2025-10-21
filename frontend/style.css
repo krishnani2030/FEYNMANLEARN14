@@ -1305,25 +1305,24 @@ a:hover {
   margin-bottom: var(--space-24);
 }
 
-.google-signin-wrapper {
+.form-group {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: var(--space-16);
-  margin-bottom: var(--space-24);
+  gap: var(--space-8);
+  margin-bottom: var(--space-16);
 }
 
-.google-signin-button {
-  display: flex;
-  justify-content: center;
+.form-group label {
+  font-weight: var(--font-weight-medium);
+  color: var(--color-gray-700);
+}
+
+.auth-form .form-control {
   width: 100%;
 }
 
-.auth-hint {
-  text-align: center;
-  color: var(--color-gray-600);
-  font-size: 0.95rem;
-  margin: 0;
+.btn--full {
+  width: 100%;
 }
 
 .auth-error {
@@ -1358,6 +1357,27 @@ a:hover {
 
 .auth-footer a:hover {
   color: var(--color-gray-600);
+}
+
+.auth-footer--stacked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--color-primary-600);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+  color: var(--color-primary-500);
 }
 
 /* Dashboard */
@@ -1921,6 +1941,123 @@ a:hover {
 .modal-detail strong {
   color: var(--color-black);
   font-weight: var(--font-weight-semibold);
+}
+
+/* Live Call Overlay */
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(var(--color-slate-900-rgb), 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-24);
+  z-index: 1000;
+}
+
+.call-overlay.hidden {
+  display: none;
+}
+
+.call-window {
+  width: 100%;
+  max-width: 960px;
+  background: rgba(15, 23, 42, 0.92);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(var(--color-brown-600-rgb), 0.25);
+  box-shadow: var(--shadow-2xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-24);
+  color: #f8fafc;
+}
+
+.call-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-16);
+}
+
+.call-header-titles h3 {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+}
+
+.call-header-titles p {
+  margin: 0;
+  color: rgba(248, 250, 252, 0.7);
+  font-size: 0.9rem;
+}
+
+.call-body {
+  background: rgba(15, 23, 42, 0.55);
+  border-radius: var(--radius-lg);
+  padding: var(--space-16);
+  flex: 1;
+  overflow-y: auto;
+}
+
+.call-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-16);
+}
+
+.call-participant {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.call-video-frame {
+  position: relative;
+  background: rgba(17, 24, 39, 0.85);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(248, 250, 252, 0.08);
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.call-video-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: rgba(15, 23, 42, 1);
+}
+
+.call-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: var(--space-8) var(--space-12);
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.75));
+  font-size: 0.85rem;
+}
+
+.call-footer {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-12);
+}
+
+.call-overlay .btn {
+  min-width: 120px;
+}
+
+@media (max-width: 768px) {
+  .call-window {
+    padding: var(--space-16);
+  }
+
+  .call-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Alert */

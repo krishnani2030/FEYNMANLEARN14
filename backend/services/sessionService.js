@@ -1,13 +1,14 @@
 const Session = require('../models/Session');
 const { notifySessionStart, notifySessionReminder } = require('./notificationService');
+const { JOIN_WINDOW_MINUTES } = require('../utils/sessionJoin');
 
 // Check and update session statuses
 const checkOngoingSessions = async () => {
     try {
         const now = new Date();
 
-        // Find sessions that should be starting soon (15 minutes before)
-        const reminderTime = new Date(now.getTime() + 15 * 60 * 1000);
+        // Find sessions that should be starting soon (join window before start)
+        const reminderTime = new Date(now.getTime() + JOIN_WINDOW_MINUTES * 60 * 1000);
         const sessionsForReminder = await Session.find({
             status: 'upcoming',
             date: { $lte: reminderTime, $gt: now },

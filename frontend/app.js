@@ -2,6 +2,8 @@
 
 // API Configuration
 const API_BASE_URL = window.location.hostname === 'localhost' ? 'http://localhost:5050/api' : '/api';
+const SOCKET_BASE_URL = API_BASE_URL.startsWith('http') ? API_BASE_URL.replace(/\/api$/, '') : window.location.origin;
+
 
 // Mock data (will be replaced with API calls)
 let currentUser = null;
@@ -14,7 +16,25 @@ let activeNoteId = null;
 let chatUserSearchTimeout = null;
 let isNewChatPanelVisible = false;
 
-const SESSION_JOIN_WINDOW_MINUTES = 15;
+let SESSION_JOIN_WINDOW_MINUTES = 5;
+let appConfig = {
+    joinWindowMinutes: SESSION_JOIN_WINDOW_MINUTES,
+    notificationsSender: 'Feynman',
+    emailVerificationRequired: true,
+    configError: false
+};
+
+const RTC_CONFIGURATION = {
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+};
+
+let callSocket = null;
+const callPeers = new Map();
+const remoteParticipantElements = new Map();
+let localMediaStream = null;
+let activeCallSession = null;
+let micEnabled = true;
+let cameraEnabled = true;
 
 function normalizeIdentifier(value) {
     if (value === null || value === undefined) {
@@ -88,11 +108,6 @@ function computeJoinAvailabilityState(session) {
     }
 
     ensureJoinMetadata(session);
-
-    if (!session.meetLink) {
-        session.canJoinNow = false;
-        return { session, canJoinNow: false };
-    }
 
     const now = new Date();
     const joinOpens = session.joinOpensAt ? new Date(session.joinOpensAt) : null;
@@ -466,16 +481,67 @@ async function apiRequest(endpoint, options = {}) {
     }
 }
 
+async function fetchAppConfig() {
+    try {
+        const data = await apiRequest('/config');
+        const joinWindowMinutes = Number(data.joinWindowMinutes);
+
+        if (!Number.isNaN(joinWindowMinutes) && joinWindowMinutes > 0) {
+            SESSION_JOIN_WINDOW_MINUTES = joinWindowMinutes;
+        }
+
+        appConfig = {
+            joinWindowMinutes: SESSION_JOIN_WINDOW_MINUTES,
+            notificationsSender: data.notificationsSender || 'Feynman',
+            emailVerificationRequired: data.emailVerificationRequired !== undefined
+                ? Boolean(data.emailVerificationRequired)
+                : true,
+            configError: false
+        };
+
+        return data;
+    } catch (error) {
+        console.error('Configuration load error:', error);
+        appConfig.configError = true;
+        return null;
+    }
+}
+
 // Authentication Functions
-async function authenticateWithGoogle(idToken) {
-    const data = await apiRequest('/auth/google', {
+let pendingVerificationEmail = null;
+
+async function registerAccount({ name, email, password }) {
+    const payload = { name, email, password };
+    return apiRequest('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ idToken })
+        body: JSON.stringify(payload)
+    });
+}
+
+async function loginAccount({ email, password }) {
+    const payload = { email, password };
+    const data = await apiRequest('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(payload)
     });
 
     currentUser = data.user;
     localStorage.setItem('user', JSON.stringify(currentUser));
     return data;
+}
+
+async function verifyAccount({ email, code }) {
+    return apiRequest('/auth/verify-email', {
+        method: 'POST',
+        body: JSON.stringify({ email, code })
+    });
+}
+
+async function resendVerification(email) {
+    return apiRequest('/auth/resend-verification', {
+        method: 'POST',
+        body: JSON.stringify({ email })
+    });
 }
 
 async function logout() {
@@ -541,8 +607,7 @@ async function createSession(sessionData) {
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
                 meetLink: sessionData.meetLink || '',
-                description: sessionData.description || '',
-                createMeet: Boolean(sessionData.createMeet)
+                description: sessionData.description || ''
             })
         });
 
@@ -588,8 +653,7 @@ async function updateSession(sessionId, sessionData) {
                 date: dateTime.toISOString(),
                 maxParticipants: parseInt(sessionData.maxParticipants),
                 meetLink: sessionData.meetLink || '',
-                description: sessionData.description || '',
-                createMeet: Boolean(sessionData.createMeet)
+                description: sessionData.description || ''
             })
         });
 
@@ -921,7 +985,7 @@ function getMockSessions() {
             "date": "2025-08-20",
             "time": "15:00",
             "maxParticipants": 4,
-            "meetLink": "https://meet.google.com/abc-defg-hij",
+            "meetLink": "https://example.com/session-abc",
             "creatorId": "2",
             "creatorName": "Sarah Kim",
             "participants": ["1"],
@@ -935,7 +999,7 @@ function getMockSessions() {
             "date": "2025-08-19",
             "time": "16:30",
             "maxParticipants": 3,
-            "meetLink": "https://meet.google.com/xyz-uvw-rst",
+            "meetLink": "https://example.com/session-xyz",
             "creatorId": "3",
             "creatorName": "Mike Johnson",
             "participants": [],
@@ -949,7 +1013,7 @@ function getMockSessions() {
             "date": "2025-08-18",
             "time": "14:00", 
             "maxParticipants": 5,
-            "meetLink": "https://meet.google.com/def-ghi-jkl",
+            "meetLink": "https://example.com/session-def",
             "creatorId": "1",
             "creatorName": "Alex Chen",
             "participants": ["2", "3"],
@@ -981,6 +1045,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Set up form event listeners
     setupFormEventListeners();
     initializeChatUI();
+    initializeCallUI();
     initializeNotesUI();
     renderNotesList();
     renderNotesEditor();
@@ -1017,6 +1082,53 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 // Set up form event listeners
 function setupFormEventListeners() {
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) {
+        loginForm.addEventListener('submit', handleLoginSubmit);
+    }
+
+    const registerForm = document.getElementById('register-form');
+    if (registerForm) {
+        registerForm.addEventListener('submit', handleRegisterSubmit);
+    }
+
+    const verifyForm = document.getElementById('verify-form');
+    if (verifyForm) {
+        verifyForm.addEventListener('submit', handleVerifySubmit);
+    }
+
+    const showRegisterButton = document.getElementById('show-register');
+    if (showRegisterButton) {
+        showRegisterButton.addEventListener('click', () => {
+            setAuthError('login-error', '');
+            setAuthError('register-error', '');
+            setAuthError('verify-error', '');
+            showAuthCard('register');
+        });
+    }
+
+    const showLoginButton = document.getElementById('show-login');
+    if (showLoginButton) {
+        showLoginButton.addEventListener('click', () => {
+            setAuthError('register-error', '');
+            setAuthError('verify-error', '');
+            showAuthCard('login');
+        });
+    }
+
+    const verifyBackButton = document.getElementById('verify-back');
+    if (verifyBackButton) {
+        verifyBackButton.addEventListener('click', () => {
+            setAuthError('verify-error', '');
+            showAuthCard('login');
+        });
+    }
+
+    const resendCodeButton = document.getElementById('resend-code');
+    if (resendCodeButton) {
+        resendCodeButton.addEventListener('click', handleResendCodeClick);
+    }
+
     // Create session form
     const createSessionForm = document.getElementById('create-session-form');
     if (createSessionForm) {
@@ -1117,14 +1229,6 @@ function initializeNotesUI() {
 // Rest of the original JavaScript code follows...
 // (The navigation, UI, and form handling functions remain the same)
 
-let appConfig = {
-    googleClientId: null,
-    googleMeetConfigured: false,
-    configError: false
-};
-let googleLibraryPromise = null;
-let googleIdentityInitialized = false;
-
 // Global variables
 let currentView = 'landing';
 let selectedSessionTab = 'browse';
@@ -1140,8 +1244,12 @@ function showLogin() {
     hideAllPages();
     document.getElementById('login-page').classList.remove('hidden');
     currentView = 'login';
-    clearGoogleSignInError();
-    renderGoogleSignInButton();
+    pendingVerificationEmail = null;
+    updateVerificationEmailLabel('');
+    setAuthError('login-error', '');
+    setAuthError('register-error', '');
+    setAuthError('verify-error', '');
+    showAuthCard('login');
 }
 
 function showDashboard() {
@@ -1160,126 +1268,11 @@ function showDashboard() {
     showSessionsTab('browse-sessions');
 }
 
-function clearGoogleSignInError() {
-    const errorEl = document.getElementById('google-signin-error');
-    if (errorEl) {
-        errorEl.textContent = '';
-        errorEl.classList.add('hidden');
-    }
-}
-
-function showGoogleSignInError(message) {
-    const errorEl = document.getElementById('google-signin-error');
-    if (errorEl) {
-        errorEl.textContent = message;
-        errorEl.classList.remove('hidden');
-    }
-}
-
-function waitForGoogleLibrary() {
-    if (window.google && window.google.accounts && window.google.accounts.id) {
-        return Promise.resolve();
-    }
-
-    if (!googleLibraryPromise) {
-        googleLibraryPromise = new Promise((resolve, reject) => {
-            let attempts = 0;
-            const maxAttempts = 40; // ~10 seconds
-            const interval = setInterval(() => {
-                if (window.google && window.google.accounts && window.google.accounts.id) {
-                    clearInterval(interval);
-                    resolve();
-                } else if (attempts >= maxAttempts) {
-                    clearInterval(interval);
-                    reject(new Error('Google Identity Services failed to load'));
-                }
-                attempts += 1;
-            }, 250);
-        });
-    }
-
-    return googleLibraryPromise;
-}
-
-async function initializeGoogleSignIn() {
-    if (googleIdentityInitialized) {
-        return;
-    }
-
-    await waitForGoogleLibrary();
-
-    if (!appConfig.googleClientId) {
-        throw new Error('Google Sign-In is not configured');
-    }
-
-    window.google.accounts.id.initialize({
-        client_id: appConfig.googleClientId,
-        callback: handleGoogleCredentialResponse
-    });
-
-    googleIdentityInitialized = true;
-}
-
-async function renderGoogleSignInButton() {
-    const container = document.getElementById('google-signin-button');
-    if (!container) {
-        return;
-    }
-
-    container.innerHTML = '';
-    clearGoogleSignInError();
-
-    if (appConfig.configError) {
-        showGoogleSignInError('Configuration is unavailable. Please try again later.');
-        return;
-    }
-
-    if (!appConfig.googleClientId) {
-        showGoogleSignInError('Google Sign-In is not configured.');
-        return;
-    }
-
-    try {
-        await initializeGoogleSignIn();
-        window.google.accounts.id.renderButton(container, {
-            theme: 'outline',
-            size: 'large',
-            width: '100%',
-            text: 'continue_with',
-            shape: 'rectangular'
-        });
-        window.google.accounts.id.prompt();
-    } catch (error) {
-        console.error('Failed to render Google Sign-In button:', error);
-        showGoogleSignInError('Unable to load Google Sign-In. Please refresh and try again.');
-    }
-}
-
-async function fetchAppConfig() {
-    try {
-        const response = await fetch('/api/config', { credentials: 'include' });
-        if (!response.ok) {
-            throw new Error(`Failed to load configuration (status ${response.status})`);
-        }
-
-        const data = await response.json();
-        appConfig.googleClientId = data.googleClientId || null;
-        appConfig.googleMeetConfigured = Boolean(data.googleMeetConfigured);
-        appConfig.configError = false;
-    } catch (error) {
-        console.error('Configuration load error:', error);
-        appConfig.configError = true;
-    }
-}
-
 function showCreateSession() {
+
     hideAllPages();
     document.getElementById('create-session-page').classList.remove('hidden');
     currentView = 'create-session';
-    const createMeetCheckbox = document.getElementById('session-generate-meet');
-    if (createMeetCheckbox) {
-        createMeetCheckbox.checked = false;
-    }
 }
 
 function showEditSession(sessionId) {
@@ -1297,29 +1290,137 @@ function hideAllPages() {
 }
 
 // Authentication handlers
-async function handleGoogleCredentialResponse(response) {
-    if (!response || !response.credential) {
-        showGoogleSignInError('Google sign-in was cancelled. Please try again.');
+function showAuthCard(view) {
+    const cards = {
+        login: document.getElementById('login-card'),
+        register: document.getElementById('register-card'),
+        verify: document.getElementById('verify-card')
+    };
+
+    Object.entries(cards).forEach(([key, card]) => {
+        if (!card) {
+            return;
+        }
+        if (key === view) {
+            card.classList.remove('hidden');
+        } else {
+            card.classList.add('hidden');
+        }
+    });
+}
+
+function setAuthError(targetId, message) {
+    const el = document.getElementById(targetId);
+    if (!el) {
+        return;
+    }
+    if (!message) {
+        el.textContent = '';
+        el.classList.add('hidden');
+    } else {
+        el.textContent = message;
+        el.classList.remove('hidden');
+    }
+}
+
+function updateVerificationEmailLabel(email) {
+    const label = document.getElementById('verify-email-value');
+    if (label) {
+        label.textContent = email || '';
+    }
+}
+
+async function handleLoginSubmit(event) {
+    event.preventDefault();
+    const form = event.target;
+    const email = form.querySelector('#login-email').value.trim().toLowerCase();
+    const password = form.querySelector('#login-password').value;
+    setAuthError('login-error', '');
+
+    try {
+        await loginAccount({ email, password });
+        pendingVerificationEmail = null;
+        showAlert('Login successful!', 'success');
+        showDashboard();
+    } catch (error) {
+        const details = error.responseData || {};
+        if (details.verificationRequired) {
+            pendingVerificationEmail = email;
+            updateVerificationEmailLabel(email);
+            setAuthError('verify-error', details.error || 'Please verify your email to continue.');
+            showAuthCard('verify');
+        } else {
+            setAuthError('login-error', details.error || error.message || 'Failed to log in.');
+        }
+    }
+}
+
+async function handleRegisterSubmit(event) {
+    event.preventDefault();
+    const form = event.target;
+    const name = form.querySelector('#register-name').value.trim();
+    const email = form.querySelector('#register-email').value.trim().toLowerCase();
+    const password = form.querySelector('#register-password').value;
+    setAuthError('register-error', '');
+
+    try {
+        await registerAccount({ name, email, password });
+        pendingVerificationEmail = email;
+        updateVerificationEmailLabel(email);
+        form.reset();
+        setAuthError('verify-error', 'We sent you a verification code. Enter it below to continue.');
+        showAuthCard('verify');
+    } catch (error) {
+        const message = error.responseData?.error || error.message || 'Failed to create account.';
+        setAuthError('register-error', message);
+    }
+}
+
+async function handleVerifySubmit(event) {
+    event.preventDefault();
+    const form = event.target;
+    const code = form.querySelector('#verify-code').value.trim();
+    const email = pendingVerificationEmail;
+
+    if (!email) {
+        setAuthError('verify-error', 'Please return to login and start again.');
+        showAuthCard('login');
+        return;
+    }
+
+    setAuthError('verify-error', '');
+
+    try {
+        await verifyAccount({ email, code });
+        setAuthError('login-error', 'Email verified! Please log in.');
+        showAuthCard('login');
+    } catch (error) {
+        const message = error.responseData?.error || error.message || 'Verification failed.';
+        setAuthError('verify-error', message);
+    }
+}
+
+async function handleResendCodeClick(event) {
+    event.preventDefault();
+    if (!pendingVerificationEmail) {
+        setAuthError('verify-error', 'No pending verification. Please register or log in again.');
         return;
     }
 
     try {
-        showAlert('Signing in with Google...', 'info');
-        await authenticateWithGoogle(response.credential);
-        showAlert('Login successful!', 'success');
-        showDashboard();
+        await resendVerification(pendingVerificationEmail);
+        setAuthError('verify-error', 'We just sent you a fresh code.');
     } catch (error) {
-        console.error('Google sign-in failed:', error);
-        const message = error.responseData?.error || error.message || 'Unable to sign in with Google';
-        showAlert(message, 'error');
-        showGoogleSignInError(message);
+        const message = error.responseData?.error || error.message || 'Failed to resend code.';
+        setAuthError('verify-error', message);
     }
 }
-
 async function handleLogout() {
     await logout();
     resetChatState();
     resetNotesState();
+    pendingVerificationEmail = null;
+    updateVerificationEmailLabel('');
     showLandingPage();
 }
 
@@ -1334,8 +1435,7 @@ async function handleCreateSession(event) {
         date: document.getElementById('session-date').value,
         time: document.getElementById('session-time').value,
         maxParticipants: document.getElementById('session-capacity').value,
-        meetLink: document.getElementById('session-meet-link').value,
-        createMeet: document.getElementById('session-generate-meet').checked
+        meetLink: document.getElementById('session-meet-link').value
     };
 
     try {
@@ -1372,8 +1472,7 @@ async function handleEditSession(event) {
         date: document.getElementById('edit-session-date').value,
         time: document.getElementById('edit-session-time').value,
         maxParticipants: document.getElementById('edit-session-capacity').value,
-        meetLink: document.getElementById('edit-session-meet-link').value,
-        createMeet: document.getElementById('edit-session-generate-meet').checked
+        meetLink: document.getElementById('edit-session-meet-link').value
     };
 
     try {
@@ -1448,10 +1547,6 @@ function loadSessionForEdit(sessionId) {
     
     document.getElementById('edit-session-capacity').value = session.maxParticipants;
     document.getElementById('edit-session-meet-link').value = session.meetLink || '';
-    const editGenerateMeet = document.getElementById('edit-session-generate-meet');
-    if (editGenerateMeet) {
-        editGenerateMeet.checked = Boolean(session.autoGeneratedMeetLink);
-    }
 }
 
 async function handleEnrollInSession(sessionId) {
@@ -1507,12 +1602,418 @@ function handleSessionJoinClick(event) {
         return;
     }
 
-    const meetLink = target.getAttribute('data-meet-link');
-    if (meetLink) {
-        window.open(meetLink, '_blank');
+    const sessionId = target.getAttribute('data-session-id');
+    if (sessionId) {
+        joinSessionCall(sessionId);
     }
 }
 
+function getSessionIdentifier(session) {
+    if (!session) {
+        return null;
+    }
+
+    if (session.id) {
+        return session.id.toString();
+    }
+
+    if (session._id) {
+        return session._id.toString();
+    }
+
+    return null;
+}
+
+function findSessionById(sessionId) {
+    if (!sessionId) {
+        return null;
+    }
+
+    const target = sessionId.toString();
+    return sessions.find(session => getSessionIdentifier(session) === target);
+}
+
+function clearRemoteParticipants() {
+    remoteParticipantElements.forEach(entry => {
+        if (entry.video) {
+            entry.video.srcObject = null;
+        }
+        if (entry.container && entry.container.parentNode) {
+            entry.container.parentNode.removeChild(entry.container);
+        }
+    });
+    remoteParticipantElements.clear();
+
+    callPeers.forEach(pc => pc.close());
+    callPeers.clear();
+}
+
+function attachLocalMedia(stream) {
+    const localVideo = document.getElementById('local-video');
+    if (localVideo) {
+        localVideo.srcObject = stream;
+    }
+    updateCallControls();
+}
+
+function updateCallControls() {
+    const micButton = document.getElementById('toggle-mic-button');
+    if (micButton) {
+        micButton.textContent = micEnabled ? 'Mute' : 'Unmute';
+    }
+
+    const cameraButton = document.getElementById('toggle-camera-button');
+    if (cameraButton) {
+        cameraButton.textContent = cameraEnabled ? 'Stop Video' : 'Start Video';
+    }
+}
+
+function ensureRemoteParticipantElement(peerId, name) {
+    let entry = remoteParticipantElements.get(peerId);
+    if (entry) {
+        if (name && entry.nameEl) {
+            entry.nameEl.textContent = name;
+        }
+        return entry;
+    }
+
+    const grid = document.getElementById('call-participants');
+    if (!grid) {
+        return null;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'call-participant remote';
+    container.dataset.peerId = peerId;
+
+    const frame = document.createElement('div');
+    frame.className = 'call-video-frame';
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    frame.appendChild(video);
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'call-name';
+    nameEl.textContent = name || 'Participant';
+    frame.appendChild(nameEl);
+
+    container.appendChild(frame);
+    grid.appendChild(container);
+
+    entry = { container, video, nameEl };
+    remoteParticipantElements.set(peerId, entry);
+    return entry;
+}
+
+function removeRemoteParticipant(peerId) {
+    const entry = remoteParticipantElements.get(peerId);
+    if (entry) {
+        if (entry.video) {
+            entry.video.srcObject = null;
+        }
+        if (entry.container && entry.container.parentNode) {
+            entry.container.parentNode.removeChild(entry.container);
+        }
+    }
+    remoteParticipantElements.delete(peerId);
+
+    const pc = callPeers.get(peerId);
+    if (pc) {
+        pc.close();
+        callPeers.delete(peerId);
+    }
+}
+
+function showCallOverlay(session) {
+    const overlay = document.getElementById('call-overlay');
+    if (overlay) {
+        overlay.classList.remove('hidden');
+    }
+
+    const title = document.getElementById('call-session-title');
+    if (title) {
+        title.textContent = session.topic || 'Live session';
+    }
+
+    const subtitle = document.getElementById('call-session-subtitle');
+    if (subtitle) {
+        const sessionTime = session.date ? `${formatDate(session.date)} • ${formatTime(session.date)}` : '';
+        subtitle.textContent = sessionTime;
+    }
+
+    updateCallControls();
+}
+
+function endCallSession(message) {
+    if (callSocket) {
+        try {
+            callSocket.emit('leave-session');
+            callSocket.disconnect();
+        } catch (error) {
+            console.error('Error disconnecting call socket:', error);
+        }
+    }
+    callSocket = null;
+
+    callPeers.forEach(pc => pc.close());
+    callPeers.clear();
+
+    remoteParticipantElements.forEach(entry => {
+        if (entry.video) {
+            entry.video.srcObject = null;
+        }
+        if (entry.container && entry.container.parentNode) {
+            entry.container.parentNode.removeChild(entry.container);
+        }
+    });
+    remoteParticipantElements.clear();
+
+    if (localMediaStream) {
+        localMediaStream.getTracks().forEach(track => track.stop());
+    }
+    localMediaStream = null;
+
+    const localVideo = document.getElementById('local-video');
+    if (localVideo) {
+        localVideo.srcObject = null;
+    }
+
+    const overlay = document.getElementById('call-overlay');
+    if (overlay) {
+        overlay.classList.add('hidden');
+    }
+
+    micEnabled = true;
+    cameraEnabled = true;
+    updateCallControls();
+
+    activeCallSession = null;
+
+    if (message) {
+        showAlert(message, 'info');
+    }
+}
+
+function handleMicToggle() {
+    micEnabled = !micEnabled;
+    if (localMediaStream) {
+        localMediaStream.getAudioTracks().forEach(track => {
+            track.enabled = micEnabled;
+        });
+    }
+    updateCallControls();
+}
+
+function handleCameraToggle() {
+    cameraEnabled = !cameraEnabled;
+    if (localMediaStream) {
+        localMediaStream.getVideoTracks().forEach(track => {
+            track.enabled = cameraEnabled;
+        });
+    }
+    updateCallControls();
+}
+
+function registerCallSocketHandlers(socket, session) {
+    socket.on('connect_error', error => {
+        console.error('Call socket connect error:', error);
+        endCallSession('Unable to join the session room.');
+    });
+
+    socket.on('webrtc-peers', peers => {
+        peers.forEach(peer => {
+            createPeerConnection(peer, true);
+        });
+    });
+
+    socket.on('webrtc-peer-joined', peer => {
+        createPeerConnection(peer, false);
+    });
+
+    socket.on('webrtc-signal', handleIncomingSignal);
+
+    socket.on('webrtc-peer-left', ({ socketId }) => {
+        removeRemoteParticipant(socketId);
+    });
+
+    socket.on('disconnect', () => {
+        if (activeCallSession) {
+            endCallSession('Disconnected from the session.');
+        }
+    });
+}
+
+function createPeerConnection(peer, shouldCreateOffer) {
+    if (!peer) {
+        return null;
+    }
+
+    const socketId = peer.socketId || peer.id || peer;
+    if (!socketId) {
+        return null;
+    }
+
+    if (callPeers.has(socketId)) {
+        return callPeers.get(socketId);
+    }
+
+    ensureRemoteParticipantElement(socketId, peer.name);
+
+    const pc = new RTCPeerConnection(RTC_CONFIGURATION);
+    callPeers.set(socketId, pc);
+
+    if (localMediaStream) {
+        localMediaStream.getTracks().forEach(track => pc.addTrack(track, localMediaStream));
+    }
+
+    pc.onicecandidate = event => {
+        if (event.candidate && callSocket) {
+            callSocket.emit('webrtc-signal', {
+                target: socketId,
+                data: { type: 'candidate', candidate: event.candidate }
+            });
+        }
+    };
+
+    pc.ontrack = event => {
+        const stream = event.streams[0];
+        const entry = ensureRemoteParticipantElement(socketId, peer.name);
+        if (entry && entry.video) {
+            entry.video.srcObject = stream;
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+            removeRemoteParticipant(socketId);
+        }
+    };
+
+    if (shouldCreateOffer) {
+        pc.createOffer()
+            .then(offer => pc.setLocalDescription(offer).then(() => {
+                if (callSocket) {
+                    callSocket.emit('webrtc-signal', {
+                        target: socketId,
+                        data: { type: 'offer', sdp: offer }
+                    });
+                }
+            }))
+            .catch(error => console.error('Failed to create offer:', error));
+    }
+
+    return pc;
+}
+
+async function handleIncomingSignal(payload) {
+    if (!payload || !payload.socketId || !payload.data) {
+        return;
+    }
+
+    const socketId = payload.socketId;
+    const data = payload.data;
+    let pc = callPeers.get(socketId);
+
+    if (!pc) {
+        pc = createPeerConnection({ socketId }, false);
+    }
+
+    if (!pc) {
+        return;
+    }
+
+    try {
+        if (data.type === 'offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            if (callSocket) {
+                callSocket.emit('webrtc-signal', {
+                    target: socketId,
+                    data: { type: 'answer', sdp: answer }
+                });
+            }
+        } else if (data.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        } else if (data.type === 'candidate' && data.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+    } catch (error) {
+        console.error('Error handling WebRTC signal:', error);
+    }
+}
+
+async function joinSessionCall(sessionId) {
+    if (!currentUser) {
+        showLogin();
+        return;
+    }
+
+    if (callSocket || localMediaStream) {
+        showAlert('You are already in a live session.', 'info');
+        return;
+    }
+
+    const session = findSessionById(sessionId);
+    if (!session) {
+        showAlert('Session not found.', 'error');
+        return;
+    }
+
+    const availability = computeJoinAvailabilityState(session);
+    if (!availability.canJoinNow) {
+        showAlert(`The room opens ${SESSION_JOIN_WINDOW_MINUTES} minutes before the start time.`, 'info');
+        return;
+    }
+
+    try {
+        showAlert('Preparing your live room...', 'info');
+        const tokenResponse = await apiRequest(`/sessions/${sessionId}/webrtc-token`, { method: 'POST' });
+        const token = tokenResponse.token;
+        if (!token) {
+            throw new Error(tokenResponse.error || 'Unable to join this session.');
+        }
+
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        localMediaStream = mediaStream;
+        micEnabled = true;
+        cameraEnabled = true;
+        activeCallSession = session;
+
+        clearRemoteParticipants();
+        attachLocalMedia(mediaStream);
+        showCallOverlay(session);
+
+        callSocket = io(SOCKET_BASE_URL, { auth: { token } });
+        registerCallSocketHandlers(callSocket, session);
+    } catch (error) {
+        console.error('Failed to start call:', error);
+        endCallSession(error.responseData?.error || error.message || 'Unable to start the live call.');
+    }
+}
+
+function initializeCallUI() {
+    const leaveButton = document.getElementById('leave-call-button');
+    if (leaveButton) {
+        leaveButton.addEventListener('click', () => {
+            endCallSession();
+        });
+    }
+
+    const micButton = document.getElementById('toggle-mic-button');
+    if (micButton) {
+        micButton.addEventListener('click', handleMicToggle);
+    }
+
+    const cameraButton = document.getElementById('toggle-camera-button');
+    if (cameraButton) {
+        cameraButton.addEventListener('click', handleCameraToggle);
+    }
+}
+
+// UI Update functions
 // UI Update functions
 function updateDashboard() {
     if (currentUser) {
@@ -2814,30 +3315,22 @@ function displaySessions(sessionsList, container, isOwner = false) {
 
         const isFull = Array.isArray(session.participants) && session.participants.length >= session.maxParticipants;
         const joinAvailable = sessionCanJoinNow(session);
-        const hasMeetLink = Boolean(session.meetLink);
-        const canJoin = joinAvailable && hasMeetLink && (isCreator || isEnrolled);
-
-        console.log('Session enrollment check:', {
-            topic: session.topic,
-            sessionId: session.id || session._id,
-            participants: session.participants,
-            currentUserId,
-            isEnrolled,
-            isCreator,
-            canJoin
-        });
+        const isEligibleToJoin = isCreator || isEnrolled;
+        const canJoin = joinAvailable && isEligibleToJoin;
 
         const detailsButton = `<button class="btn btn--secondary btn--sm" onclick="openSessionDetails('${session.id || session._id}')">Details</button>`;
         const actions = [detailsButton];
 
-        if (canJoin) {
-            const meetLinkValue = escapeHtml(session.meetLink || '');
-            actions.push(`<button class="btn btn--primary btn--sm" type="button" data-meet-link="${meetLinkValue}" onclick="handleSessionJoinClick(event)">Join Now</button>`);
+        if (isEligibleToJoin) {
+            const buttonClass = canJoin ? 'btn--primary' : 'btn--outline';
+            const disabledAttr = canJoin ? '' : 'disabled';
+            const label = canJoin ? 'Join Now' : 'Join Soon';
+            actions.push(`<button class="btn ${buttonClass} btn--sm" type="button" data-session-id="${session.id || session._id}" onclick="handleSessionJoinClick(event)" ${disabledAttr}>${label}</button>`);
         }
 
         if (isCreator) {
             actions.push(`<button class="btn btn--outline btn--sm" onclick="showEditSession('${session.id || session._id}')">Edit</button>`);
-        } else if (!canJoin) {
+        } else if (!isEligibleToJoin) {
             if (isEnrolled) {
                 actions.push('<button class="btn btn--enrolled btn--sm" disabled>Enrolled</button>');
             } else if (isFull) {
@@ -2850,7 +3343,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
         const actionButtons = actions.join('');
 
         let joinNote = '';
-        if (hasMeetLink && (isCreator || isEnrolled)) {
+        if (isEligibleToJoin) {
             const { joinOpensAt } = getSessionJoinTimes(session);
             if (joinAvailable) {
                 joinNote = '<p class="session-join-note">You can join this session now.</p>';
@@ -2862,7 +3355,7 @@ function displaySessions(sessionsList, container, isOwner = false) {
                 const joinDateLabel = sameDay ? '' : `${escapeHtml(joinDateLabelRaw)} `;
                 joinNote = `<p class="session-join-note">Join opens ${joinDateLabel}${joinTimeLabel} (${SESSION_JOIN_WINDOW_MINUTES} min before start).</p>`;
             } else {
-                joinNote = `<p class="session-join-note">Join link unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
+                joinNote = `<p class="session-join-note">The room unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
             }
         }
 
@@ -2916,13 +3409,13 @@ function openSessionDetails(sessionId) {
     const isCreator = normalizedCurrentUser && creatorIdentifier ? creatorIdentifier === normalizedCurrentUser : false;
     const isEnrolled = normalizedCurrentUser ? sessionIncludesUser(session, normalizedCurrentUser) : false;
     const joinAvailable = sessionCanJoinNow(session);
-    const hasMeetLink = Boolean(session.meetLink);
-    const canJoinSession = joinAvailable && hasMeetLink && (isCreator || isEnrolled);
+    const isEligible = isCreator || isEnrolled;
+    const canJoinSession = joinAvailable && isEligible;
     const { joinOpensAt } = getSessionJoinTimes(session);
     const canMessageInstructor = creatorIdentifier && (!normalizedCurrentUser || creatorIdentifier !== normalizedCurrentUser);
 
     let joinNoteMarkup = '';
-    if (hasMeetLink && (isCreator || isEnrolled)) {
+    if (isEligible) {
         if (canJoinSession) {
             joinNoteMarkup = '<p class="session-join-note">You can join this session now.</p>';
         } else if (joinOpensAt && !Number.isNaN(joinOpensAt.getTime())) {
@@ -2933,18 +3426,12 @@ function openSessionDetails(sessionId) {
             const joinDateLabel = sameDay ? '' : `${escapeHtml(joinDateLabelRaw)} `;
             joinNoteMarkup = `<p class="session-join-note">Join opens ${joinDateLabel}${joinTimeLabel} (${SESSION_JOIN_WINDOW_MINUTES} min before start).</p>`;
         } else {
-            joinNoteMarkup = `<p class="session-join-note">Join link unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
+            joinNoteMarkup = `<p class="session-join-note">The room unlocks ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`;
         }
     }
 
-    const meetLinkMarkup = hasMeetLink
-        ? (canJoinSession
-            ? `<p><strong>Meet Link:</strong> <a href="${escapeHtml(session.meetLink)}" target="_blank" rel="noopener noreferrer">Join call</a></p>`
-            : `<p><strong>Meet Link:</strong> Available ${SESSION_JOIN_WINDOW_MINUTES} minutes before start.</p>`)
-        : '';
-
-    const joinButtonMarkup = canJoinSession
-        ? `<button class="btn btn--primary btn--sm" type="button" data-meet-link="${escapeHtml(session.meetLink)}" onclick="handleSessionJoinClick(event)">Join Now</button>`
+    const joinButtonMarkup = isEligible
+        ? `<button class="btn ${canJoinSession ? 'btn--primary' : 'btn--outline'} btn--sm" type="button" data-session-id="${session.id || session._id}" onclick="handleSessionJoinClick(event)" ${canJoinSession ? '' : 'disabled'}>${canJoinSession ? 'Join Now' : 'Join Soon'}</button>`
         : '';
 
     modalDetails.innerHTML = `
@@ -2955,7 +3442,6 @@ function openSessionDetails(sessionId) {
             <p><strong>Date:</strong> ${escapeHtml(sessionDate)}</p>
             <p><strong>Time:</strong> ${escapeHtml(sessionTime)}</p>
             <p><strong>Participants:</strong> ${(session.participants?.length || 0)} / ${session.maxParticipants}</p>
-            ${meetLinkMarkup}
             ${joinNoteMarkup}
             ${joinButtonMarkup}
             ${canMessageInstructor ? '<button class="btn btn--secondary btn--sm" id="session-message-host">Message instructor</button>' : ''}

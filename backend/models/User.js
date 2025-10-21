@@ -17,38 +17,44 @@ const userSchema = new mongoose.Schema({
         trim: true,
         match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email address']
     },
-    googleId: {
-        type: String,
-        trim: true,
-        unique: true,
-        sparse: true
-    },
-    googleAvatarUrl: {
-        type: String,
-        trim: true
-    },
-    authProvider: {
-        type: String,
-        enum: ['google', 'system'],
-        default: 'google'
-    },
     passwordHash: {
         type: String,
         minlength: [6, 'Password must be at least 6 characters long'],
-        default: null
+        required: [true, 'Password is required']
     },
     role: {
         type: String,
         enum: ['student', 'admin'],
         default: 'student'
     },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
     isSystem: {
         type: Boolean,
         default: false
     },
-    isActive: {
+    authProvider: {
+        type: String,
+        enum: ['password', 'system'],
+        default: 'password'
+    },
+    isEmailVerified: {
         type: Boolean,
-        default: true
+        default: false
+    },
+    verificationCodeHash: {
+        type: String,
+        default: null
+    },
+    verificationCodeExpiresAt: {
+        type: Date,
+        default: null
+    },
+    lastVerificationSentAt: {
+        type: Date,
+        default: null
     },
     lastLogin: {
         type: Date,
@@ -67,7 +73,7 @@ const userSchema = new mongoose.Schema({
     toJSON: {
         transform: function(doc, ret) {
             delete ret.passwordHash;
-            delete ret.googleId;
+            delete ret.verificationCodeHash;
             delete ret.__v;
             return ret;
         }
@@ -76,7 +82,6 @@ const userSchema = new mongoose.Schema({
 
 // Index for faster email lookups
 userSchema.index({ email: 1 });
-userSchema.index({ googleId: 1 }, { sparse: true, unique: true });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
@@ -103,6 +108,14 @@ userSchema.methods.getDisplayName = function() {
         return `${nameParts[0]} ${nameParts[1][0]}.`;
     }
     return nameParts[0];
+};
+
+userSchema.methods.verifyPassword = async function(candidate) {
+    if (!candidate || !this.passwordHash) {
+        return false;
+    }
+
+    return bcrypt.compare(candidate, this.passwordHash);
 };
 
 // Update last login
