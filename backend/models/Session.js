@@ -161,12 +161,48 @@ sessionSchema.methods.isFull = function() {
 
 // Check if user is enrolled
 sessionSchema.methods.isUserEnrolled = function(userId) {
-    return this.participants.some(p => p.user.toString() === userId.toString());
+    if (!userId) {
+        return false;
+    }
+
+    const targetId = typeof userId === 'object' && typeof userId.toString === 'function'
+        ? userId.toString()
+        : String(userId);
+
+    return this.participants.some(participant => {
+        if (!participant || !participant.user) {
+            return false;
+        }
+
+        const participantUser = participant.user;
+
+        const participantId = typeof participantUser === 'object' && participantUser._id
+            ? participantUser._id.toString()
+            : typeof participantUser === 'object' && typeof participantUser.toString === 'function'
+                ? participantUser.toString()
+                : String(participantUser);
+
+        return participantId === targetId;
+    });
 };
 
 // Check if user is the creator
 sessionSchema.methods.isCreator = function(userId) {
-    return this.creator.toString() === userId.toString();
+    if (!this.creator || !userId) {
+        return false;
+    }
+
+    const creatorId = typeof this.creator === 'object' && this.creator._id
+        ? this.creator._id.toString()
+        : typeof this.creator === 'object' && typeof this.creator.toString === 'function'
+            ? this.creator.toString()
+            : String(this.creator);
+
+    const targetId = typeof userId === 'object' && typeof userId.toString === 'function'
+        ? userId.toString()
+        : String(userId);
+
+    return creatorId === targetId;
 };
 
 // Enroll a user
