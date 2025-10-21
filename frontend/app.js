@@ -467,54 +467,15 @@ async function apiRequest(endpoint, options = {}) {
 }
 
 // Authentication Functions
-async function login(email, password) {
-    try {
-        const data = await apiRequest('/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ email, password })
-        });
+async function authenticateWithGoogle(idToken) {
+    const data = await apiRequest('/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ idToken })
+    });
 
-        currentUser = data.user;
-        localStorage.setItem('user', JSON.stringify(currentUser));
-        return data;
-    } catch (error) {
-        if (error.responseData && error.responseData.requiresVerification) {
-            error.requiresVerification = true;
-            error.email = error.responseData.email;
-            error.emailDelivery = error.responseData.emailDelivery;
-            error.smtpConfigured = error.responseData.smtpConfigured;
-        }
-
-        throw error;
-    }
-}
-
-async function signup(name, email, password) {
-    try {
-        console.log('Attempting to signup with email:', email);
-        const data = await apiRequest('/auth/signup', {
-            method: 'POST',
-            body: JSON.stringify({ name, email, password })
-        });
-
-        console.log('Signup successful:', data);
-        return data;
-    } catch (error) {
-        console.error('Signup API error:', error);
-
-        // Provide more specific error messages
-        if (error.message && error.message.includes('already exists')) {
-            throw new Error('User with this email already exists');
-        } else if (error.message && error.message.includes('Validation failed')) {
-            throw new Error('Validation failed: Please check your input');
-        }
-
-        if (error.responseData && error.responseData.error) {
-            throw new Error(error.responseData.error);
-        }
-
-        throw error;
-    }
+    currentUser = data.user;
+    localStorage.setItem('user', JSON.stringify(currentUser));
+    return data;
 }
 
 async function logout() {
@@ -527,77 +488,6 @@ async function logout() {
         // Still clear local state even if API call fails
         currentUser = null;
         localStorage.removeItem('user');
-    }
-}
-
-function hideVerificationNotice() {
-    const container = document.getElementById('verification-notice');
-    if (container) {
-        container.classList.add('hidden');
-        container.innerHTML = '';
-    }
-}
-
-function renderVerificationNotice(email, deliveryStatus = 'sent', smtpConfigured = true) {
-    const container = document.getElementById('verification-notice');
-    if (!container) {
-        return;
-    }
-
-    const statusMessage = !smtpConfigured
-        ? 'Email delivery is not configured. Contact support to get verified.'
-        : deliveryStatus === 'failed'
-            ? 'We could not send the verification email. Try again in a moment.'
-            : deliveryStatus === 'skipped'
-                ? 'Email delivery is disabled. We generated a verification link for when email is available.'
-                : 'We sent a fresh verification email to your inbox.';
-
-    container.classList.remove('hidden');
-    container.innerHTML = `
-        <div class="verification-card">
-            <p><strong>Verify your email to continue.</strong></p>
-            <p>${escapeHtml(statusMessage)}</p>
-            <p class="verification-email">${escapeHtml(email)}</p>
-            <button type="button" class="btn btn--secondary btn--sm" id="resend-verification-btn">Resend verification</button>
-        </div>
-    `;
-
-    const button = container.querySelector('#resend-verification-btn');
-    if (button) {
-        if (!smtpConfigured) {
-            button.disabled = true;
-            button.classList.add('btn--disabled');
-        } else {
-            button.addEventListener('click', async () => {
-                button.disabled = true;
-                button.textContent = 'Sending…';
-                try {
-                    const result = await resendVerificationEmail(email);
-                    const message = result?.message || 'Verification email sent!';
-                    showAlert(message, 'success');
-                    renderVerificationNotice(email, result?.emailDelivery || 'sent', result?.smtpConfigured !== false);
-                } catch (error) {
-                    showAlert(error.message || 'Failed to send verification email', 'error');
-                    button.disabled = false;
-                    button.textContent = 'Resend verification';
-                }
-            });
-        }
-    }
-}
-
-async function resendVerificationEmail(email) {
-    try {
-        return await apiRequest('/auth/resend-verification', {
-            method: 'POST',
-            body: JSON.stringify({ email })
-        });
-    } catch (error) {
-        console.error('Resend verification error:', error);
-        if (error.responseData && error.responseData.error) {
-            throw new Error(error.responseData.error);
-        }
-        throw error;
     }
 }
 
@@ -1087,6 +977,7 @@ function getMockSessions() {
 document.addEventListener('DOMContentLoaded', async function() {
     console.log('Feynman Learn App Starting...');
 
+    await fetchAppConfig();
     // Set up form event listeners
     setupFormEventListeners();
     initializeChatUI();
@@ -1126,18 +1017,6 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 // Set up form event listeners
 function setupFormEventListeners() {
-    // Login form
-    const loginForm = document.getElementById('login-form');
-    if (loginForm) {
-        loginForm.addEventListener('submit', handleLogin);
-    }
-
-    // Signup form
-    const signupForm = document.getElementById('signup-form');
-    if (signupForm) {
-        signupForm.addEventListener('submit', handleSignup);
-    }
-
     // Create session form
     const createSessionForm = document.getElementById('create-session-form');
     if (createSessionForm) {
@@ -1238,6 +1117,14 @@ function initializeNotesUI() {
 // Rest of the original JavaScript code follows...
 // (The navigation, UI, and form handling functions remain the same)
 
+let appConfig = {
+    googleClientId: null,
+    googleMeetConfigured: false,
+    configError: false
+};
+let googleLibraryPromise = null;
+let googleIdentityInitialized = false;
+
 // Global variables
 let currentView = 'landing';
 let selectedSessionTab = 'browse';
@@ -1253,12 +1140,8 @@ function showLogin() {
     hideAllPages();
     document.getElementById('login-page').classList.remove('hidden');
     currentView = 'login';
-}
-
-function showSignup() {
-    hideAllPages();
-    document.getElementById('signup-page').classList.remove('hidden');
-    currentView = 'signup';
+    clearGoogleSignInError();
+    renderGoogleSignInButton();
 }
 
 function showDashboard() {
@@ -1275,6 +1158,118 @@ function showDashboard() {
     }
     toggleNewChatPanel(false);
     showSessionsTab('browse-sessions');
+}
+
+function clearGoogleSignInError() {
+    const errorEl = document.getElementById('google-signin-error');
+    if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.classList.add('hidden');
+    }
+}
+
+function showGoogleSignInError(message) {
+    const errorEl = document.getElementById('google-signin-error');
+    if (errorEl) {
+        errorEl.textContent = message;
+        errorEl.classList.remove('hidden');
+    }
+}
+
+function waitForGoogleLibrary() {
+    if (window.google && window.google.accounts && window.google.accounts.id) {
+        return Promise.resolve();
+    }
+
+    if (!googleLibraryPromise) {
+        googleLibraryPromise = new Promise((resolve, reject) => {
+            let attempts = 0;
+            const maxAttempts = 40; // ~10 seconds
+            const interval = setInterval(() => {
+                if (window.google && window.google.accounts && window.google.accounts.id) {
+                    clearInterval(interval);
+                    resolve();
+                } else if (attempts >= maxAttempts) {
+                    clearInterval(interval);
+                    reject(new Error('Google Identity Services failed to load'));
+                }
+                attempts += 1;
+            }, 250);
+        });
+    }
+
+    return googleLibraryPromise;
+}
+
+async function initializeGoogleSignIn() {
+    if (googleIdentityInitialized) {
+        return;
+    }
+
+    await waitForGoogleLibrary();
+
+    if (!appConfig.googleClientId) {
+        throw new Error('Google Sign-In is not configured');
+    }
+
+    window.google.accounts.id.initialize({
+        client_id: appConfig.googleClientId,
+        callback: handleGoogleCredentialResponse
+    });
+
+    googleIdentityInitialized = true;
+}
+
+async function renderGoogleSignInButton() {
+    const container = document.getElementById('google-signin-button');
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = '';
+    clearGoogleSignInError();
+
+    if (appConfig.configError) {
+        showGoogleSignInError('Configuration is unavailable. Please try again later.');
+        return;
+    }
+
+    if (!appConfig.googleClientId) {
+        showGoogleSignInError('Google Sign-In is not configured.');
+        return;
+    }
+
+    try {
+        await initializeGoogleSignIn();
+        window.google.accounts.id.renderButton(container, {
+            theme: 'outline',
+            size: 'large',
+            width: '100%',
+            text: 'continue_with',
+            shape: 'rectangular'
+        });
+        window.google.accounts.id.prompt();
+    } catch (error) {
+        console.error('Failed to render Google Sign-In button:', error);
+        showGoogleSignInError('Unable to load Google Sign-In. Please refresh and try again.');
+    }
+}
+
+async function fetchAppConfig() {
+    try {
+        const response = await fetch('/api/config', { credentials: 'include' });
+        if (!response.ok) {
+            throw new Error(`Failed to load configuration (status ${response.status})`);
+        }
+
+        const data = await response.json();
+        appConfig.googleClientId = data.googleClientId || null;
+        appConfig.googleMeetConfigured = Boolean(data.googleMeetConfigured);
+        appConfig.configError = false;
+    } catch (error) {
+        console.error('Configuration load error:', error);
+        appConfig.configError = true;
+    }
 }
 
 function showCreateSession() {
@@ -1302,83 +1297,22 @@ function hideAllPages() {
 }
 
 // Authentication handlers
-async function handleLogin(event) {
-    event.preventDefault();
-    const form = event.target;
-    const email = document.getElementById('login-email').value;
-    const password = document.getElementById('login-password').value;
-
-    try {
-        showAlert('Logging in...', 'info');
-        await login(email, password);
-        hideVerificationNotice();
-        showAlert('Login successful!', 'success');
-        showDashboard();
-    } catch (error) {
-        console.error('Login error:', error);
-        if (error.requiresVerification) {
-            showAlert('Please verify your email before signing in.', 'warning');
-            renderVerificationNotice(error.email || email, error.emailDelivery, error.smtpConfigured);
-            return;
-        }
-
-        const message = error.responseData?.error || error.message || 'Unknown error';
-        showAlert('Login failed: ' + message, 'error');
-    }
-}
-
-async function handleSignup(event) {
-    event.preventDefault();
-    const form = event.target;
-    const name = document.getElementById('signup-name').value;
-    const email = document.getElementById('signup-email').value;
-    const password = document.getElementById('signup-password').value;
-
-    // Clear any previous error styling
-    document.getElementById('signup-email').classList.remove('form-field--error');
-    document.getElementById('signup-name').classList.remove('form-field--error');
-    document.getElementById('signup-password').classList.remove('form-field--error');
-
-    // Validate that all fields are filled
-    if (!name || !email || !password) {
-        showAlert('Please fill in all fields', 'error');
-        if (!name) document.getElementById('signup-name').classList.add('form-field--error');
-        if (!email) document.getElementById('signup-email').classList.add('form-field--error');
-        if (!password) document.getElementById('signup-password').classList.add('form-field--error');
+async function handleGoogleCredentialResponse(response) {
+    if (!response || !response.credential) {
+        showGoogleSignInError('Google sign-in was cancelled. Please try again.');
         return;
     }
 
     try {
-        showAlert('Creating account...', 'info');
-        const result = await signup(name, email, password);
-        showAlert('Account created successfully! Check your email to verify your account.', 'success');
-
-        // Clear the form on success
-        form.reset();
-
-        showLogin();
-        const loginEmail = document.getElementById('login-email');
-        if (loginEmail) {
-            loginEmail.value = email;
-        }
-        renderVerificationNotice(email, result?.emailDelivery || 'sent', result?.smtpConfigured !== false);
+        showAlert('Signing in with Google...', 'info');
+        await authenticateWithGoogle(response.credential);
+        showAlert('Login successful!', 'success');
+        showDashboard();
     } catch (error) {
-        console.error('Signup error:', error);
-
-        // Handle specific error cases
-        let errorMessage = 'Signup failed: ' + (error.responseData?.error || error.message || 'Unknown error');
-
-        if (error.message && error.message.includes('already exists')) {
-            errorMessage = 'This email is already registered. Please use a different email or try logging in instead.';
-            // Clear only the email field for duplicate email errors and add error styling
-            document.getElementById('signup-email').value = '';
-            document.getElementById('signup-email').classList.add('form-field--error');
-            document.getElementById('signup-email').focus();
-        } else if (error.message && error.message.includes('Validation failed')) {
-            errorMessage = 'Please check your input and try again.';
-        }
-        
-        showAlert(errorMessage, 'error');
+        console.error('Google sign-in failed:', error);
+        const message = error.responseData?.error || error.message || 'Unable to sign in with Google';
+        showAlert(message, 'error');
+        showGoogleSignInError(message);
     }
 }
 
@@ -3285,28 +3219,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (dateInput) {
         const today = new Date().toISOString().split('T')[0];
         dateInput.min = today;
-    }
-
-    // Add event listeners to clear error styling when users start typing
-    const signupEmail = document.getElementById('signup-email');
-    if (signupEmail) {
-        signupEmail.addEventListener('input', function() {
-            this.classList.remove('form-field--error');
-        });
-    }
-
-    const signupName = document.getElementById('signup-name');
-    if (signupName) {
-        signupName.addEventListener('input', function() {
-            this.classList.remove('form-field--error');
-        });
-    }
-
-    const signupPassword = document.getElementById('signup-password');
-    if (signupPassword) {
-        signupPassword.addEventListener('input', function() {
-            this.classList.remove('form-field--error');
-        });
     }
 });
 

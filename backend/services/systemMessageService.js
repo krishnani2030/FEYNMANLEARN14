@@ -47,10 +47,25 @@ async function ensureSystemUser() {
             email: DEFAULT_SYSTEM_EMAIL,
             passwordHash,
             role: 'admin',
-            emailVerified: true,
-            isSystem: true
+            isSystem: true,
+            authProvider: 'system'
         });
         await systemUser.save();
+    } else {
+        const updates = {};
+
+        if (!systemUser.passwordHash) {
+            updates.passwordHash = await bcrypt.hash(DEFAULT_SYSTEM_PASSWORD, 12);
+        }
+
+        if (systemUser.authProvider !== 'system') {
+            updates.authProvider = 'system';
+        }
+
+        if (Object.keys(updates).length > 0) {
+            systemUser.set(updates);
+            await systemUser.save();
+        }
     }
 
     cachedSystemUser = systemUser;

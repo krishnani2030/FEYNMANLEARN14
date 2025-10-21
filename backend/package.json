@@ -23,7 +23,8 @@
     "morgan": "^1.10.0",
     "node-cron": "^3.0.2",
     "nodemailer": "^6.9.8",
-    "googleapis": "^126.0.1"
+    "googleapis": "^126.0.1",
+    "google-auth-library": "^9.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

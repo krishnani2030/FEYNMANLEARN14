@@ -17,10 +17,25 @@ const userSchema = new mongoose.Schema({
         trim: true,
         match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email address']
     },
+    googleId: {
+        type: String,
+        trim: true,
+        unique: true,
+        sparse: true
+    },
+    googleAvatarUrl: {
+        type: String,
+        trim: true
+    },
+    authProvider: {
+        type: String,
+        enum: ['google', 'system'],
+        default: 'google'
+    },
     passwordHash: {
         type: String,
-        required: [true, 'Password is required'],
-        minlength: [6, 'Password must be at least 6 characters long']
+        minlength: [6, 'Password must be at least 6 characters long'],
+        default: null
     },
     role: {
         type: String,
@@ -34,18 +49,6 @@ const userSchema = new mongoose.Schema({
     isActive: {
         type: Boolean,
         default: true
-    },
-    emailVerified: {
-        type: Boolean,
-        default: false
-    },
-    emailVerificationToken: {
-        type: String,
-        default: null
-    },
-    emailVerificationExpires: {
-        type: Date,
-        default: null
     },
     lastLogin: {
         type: Date,
@@ -64,8 +67,7 @@ const userSchema = new mongoose.Schema({
     toJSON: {
         transform: function(doc, ret) {
             delete ret.passwordHash;
-            delete ret.emailVerificationToken;
-            delete ret.emailVerificationExpires;
+            delete ret.googleId;
             delete ret.__v;
             return ret;
         }
@@ -74,11 +76,11 @@ const userSchema = new mongoose.Schema({
 
 // Index for faster email lookups
 userSchema.index({ email: 1 });
-userSchema.index({ emailVerificationToken: 1 }, { sparse: true });
+userSchema.index({ googleId: 1 }, { sparse: true, unique: true });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-    if (!this.isModified('passwordHash')) return next();
+    if (!this.isModified('passwordHash') || !this.passwordHash) return next();
 
     // Check if password is already hashed (bcrypt hashes start with $2a$, $2b$, or $2y$)
     if (this.passwordHash.startsWith('$2a$') || this.passwordHash.startsWith('$2b$') || this.passwordHash.startsWith('$2y$')) {
@@ -93,11 +95,6 @@ userSchema.pre('save', async function(next) {
         next(error);
     }
 });
-
-// Compare password method
-userSchema.methods.comparePassword = async function(candidatePassword) {
-    return bcrypt.compare(candidatePassword, this.passwordHash);
-};
 
 // Get user's display name (first name + last initial)
 userSchema.methods.getDisplayName = function() {

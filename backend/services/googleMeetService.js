@@ -42,7 +42,18 @@ function extractMeetLink(eventData) {
     return meetEntry ? meetEntry.uri : null;
 }
 
-function buildEventResource({ topic, description, startDate, endDate }) {
+function normalizeAttendees(attendees = []) {
+    return attendees
+        .filter(Boolean)
+        .filter(entry => entry.email)
+        .map(entry => ({
+            email: entry.email,
+            displayName: entry.displayName,
+            responseStatus: entry.responseStatus || 'accepted'
+        }));
+}
+
+function buildEventResource({ topic, description, startDate, endDate, attendees }) {
     const timeZone = process.env.GOOGLE_CALENDAR_TIMEZONE || 'UTC';
     return {
         summary: topic,
@@ -55,6 +66,7 @@ function buildEventResource({ topic, description, startDate, endDate }) {
             dateTime: endDate,
             timeZone
         },
+        attendees: normalizeAttendees(attendees),
         conferenceData: {
             createRequest: {
                 requestId: `meet-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
@@ -64,7 +76,7 @@ function buildEventResource({ topic, description, startDate, endDate }) {
     };
 }
 
-async function createMeetConference({ topic, description, startDate, endDate }) {
+async function createMeetConference({ topic, description, startDate, endDate, attendees = [] }) {
     if (!hasGoogleMeetConfig()) {
         throw new Error('Google Meet integration is not configured.');
     }
@@ -73,11 +85,12 @@ async function createMeetConference({ topic, description, startDate, endDate }) 
     await auth.authorize();
 
     const calendar = getCalendarClient(auth);
-    const resource = buildEventResource({ topic, description, startDate, endDate });
+    const resource = buildEventResource({ topic, description, startDate, endDate, attendees });
 
     const { data } = await calendar.events.insert({
         calendarId: process.env.GOOGLE_CALENDAR_ID,
         conferenceDataVersion: 1,
+        sendUpdates: attendees.length > 0 ? 'all' : 'none',
         requestBody: resource
     });
 
@@ -88,7 +101,7 @@ async function createMeetConference({ topic, description, startDate, endDate }) 
     };
 }
 
-async function updateMeetConference({ eventId, topic, description, startDate, endDate }) {
+async function updateMeetConference({ eventId, topic, description, startDate, endDate, attendees = [] }) {
     if (!hasGoogleMeetConfig()) {
         throw new Error('Google Meet integration is not configured.');
     }
@@ -97,12 +110,13 @@ async function updateMeetConference({ eventId, topic, description, startDate, en
     await auth.authorize();
     const calendar = getCalendarClient(auth);
 
-    const resource = buildEventResource({ topic, description, startDate, endDate });
+    const resource = buildEventResource({ topic, description, startDate, endDate, attendees });
 
     const { data } = await calendar.events.patch({
         calendarId: process.env.GOOGLE_CALENDAR_ID,
         eventId,
         conferenceDataVersion: 1,
+        sendUpdates: attendees.length > 0 ? 'all' : 'none',
         requestBody: resource
     });
 
@@ -113,8 +127,61 @@ async function updateMeetConference({ eventId, topic, description, startDate, en
     };
 }
 
+async function syncEventAttendees({ eventId, calendarId, attendees = [] }) {
+    if (!hasGoogleMeetConfig()) {
+        return null;
+    }
+
+    if (!eventId || !calendarId || attendees.length === 0) {
+        return null;
+    }
+
+    const auth = getAuthClient();
+    await auth.authorize();
+    const calendar = getCalendarClient(auth);
+
+    const { data: existingEvent } = await calendar.events.get({
+        calendarId,
+        eventId
+    });
+
+    const existingAttendees = Array.isArray(existingEvent.attendees)
+        ? existingEvent.attendees
+        : [];
+
+    const attendeeMap = new Map();
+
+    existingAttendees.forEach(attendee => {
+        if (attendee && attendee.email) {
+            attendeeMap.set(attendee.email.toLowerCase(), attendee);
+        }
+    });
+
+    normalizeAttendees(attendees).forEach(attendee => {
+        attendeeMap.set(attendee.email.toLowerCase(), {
+            ...attendeeMap.get(attendee.email.toLowerCase()),
+            ...attendee
+        });
+    });
+
+    const mergedAttendees = Array.from(attendeeMap.values());
+
+    await calendar.events.patch({
+        calendarId,
+        eventId,
+        conferenceDataVersion: 1,
+        sendUpdates: 'all',
+        requestBody: {
+            attendees: mergedAttendees
+        }
+    });
+
+    return mergedAttendees;
+}
+
 module.exports = {
     hasGoogleMeetConfig,
     createMeetConference,
-    updateMeetConference
+    updateMeetConference,
+    syncEventAttendees
 };

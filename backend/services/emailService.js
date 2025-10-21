@@ -46,34 +46,54 @@ async function sendMail({ to, subject, html }) {
     return { sent: true };
 }
 
-function buildVerificationEmail({ name, verificationUrl }) {
-    const safeName = name || 'there';
+function buildSessionEnrollmentEmail({
+    participantName,
+    hostName,
+    sessionTopic,
+    sessionDate,
+    meetLink,
+    joinOpensMinutes
+}) {
+    const start = sessionDate ? new Date(sessionDate) : null;
+    const formattedStart = start && !Number.isNaN(start.getTime())
+        ? start.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        })
+        : 'the scheduled time';
+
+    const safeParticipant = participantName || 'there';
+    const safeHost = hostName || 'your host';
+    const safeTopic = sessionTopic || 'your upcoming session';
+    const safeJoinMinutes = joinOpensMinutes || 15;
+
+    const joinMessage = meetLink
+        ? `<p>You can join the meeting a few minutes early using this link:<br /><a href="${meetLink}">${meetLink}</a></p>`
+        : '<p>The host will share a Google Meet link shortly before the session begins.</p>';
+
     return {
-        subject: 'Verify your Feynman Learn account',
+        subject: `You're enrolled: ${safeTopic}`,
         html: `
-            <div style="font-family: Arial, sans-serif; line-height: 1.5;">
-                <h2>Welcome to Feynman Learn, ${safeName}!</h2>
-                <p>Confirm your email address to start creating and joining sessions.</p>
-                <p>
-                    <a href="${verificationUrl}" style="display: inline-block; padding: 12px 18px; background: #046c4e; color: #fff; text-decoration: none; border-radius: 6px;">
-                        Verify Email
-                    </a>
-                </p>
-                <p>If the button does not work, copy and paste this link into your browser:</p>
-                <p><a href="${verificationUrl}">${verificationUrl}</a></p>
-                <p>This link expires in 24 hours.</p>
-                <p>Thanks,<br />The Feynman Learn Team</p>
+            <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+                <h2 style="color: #046c4e;">Hi ${safeParticipant},</h2>
+                <p>${safeHost} just confirmed your spot in <strong>${safeTopic}</strong>.</p>
+                <p>The session starts at <strong>${formattedStart}</strong>. You'll be able to join about ${safeJoinMinutes} minutes early.</p>
+                ${joinMessage}
+                <p>If you have any questions, simply reply to this email.</p>
+                <p>See you soon,<br />${safeHost} &amp; the Feynman Learn team</p>
             </div>
         `
     };
 }
 
-async function sendVerificationEmail({ email, name, verificationUrl }) {
-    const { subject, html } = buildVerificationEmail({ name, verificationUrl });
-    return sendMail({ to: email, subject, html });
+async function sendSessionEnrollmentEmail(details) {
+    const { subject, html } = buildSessionEnrollmentEmail(details);
+    return sendMail({ to: details.email, subject, html });
 }
 
 module.exports = {
-    sendVerificationEmail,
-    hasSmtpConfig
+    hasSmtpConfig,
+    sendSessionEnrollmentEmail
 };

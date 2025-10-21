@@ -2,8 +2,9 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const Session = require('../models/Session');
 const { authMiddleware, optionalAuth } = require('../middleware/auth');
-const { hasGoogleMeetConfig, createMeetConference, updateMeetConference } = require('../services/googleMeetService');
+const { hasGoogleMeetConfig, createMeetConference, updateMeetConference, syncEventAttendees } = require('../services/googleMeetService');
 const { notifySessionEnrollment } = require('../services/notificationService');
+const { sendSessionEnrollmentEmail, hasSmtpConfig } = require('../services/emailService');
 
 const router = express.Router();
 
@@ -94,6 +95,42 @@ function computeJoinAvailability(sessionObj) {
         joinClosesAt: joinClosesAt.toISOString(),
         joinWindowMinutes: JOIN_WINDOW_MINUTES
     };
+}
+
+function buildAttendeeFromUser(user) {
+    if (!user || !user.email) {
+        return null;
+    }
+
+    return {
+        email: user.email,
+        displayName: user.name || user.email
+    };
+}
+
+function collectAttendees(session) {
+    const attendees = [];
+
+    if (!session) {
+        return attendees;
+    }
+
+    if (session.creator) {
+        const creatorAttendee = buildAttendeeFromUser(session.creator);
+        if (creatorAttendee) {
+            attendees.push(creatorAttendee);
+        }
+    }
+
+    (session.participants || []).forEach(participant => {
+        const user = participant && participant.user ? participant.user : participant;
+        const attendee = buildAttendeeFromUser(user);
+        if (attendee) {
+            attendees.push(attendee);
+        }
+    });
+
+    return attendees;
 }
 
 function formatSessionResponse(session, currentUser = null) {
@@ -198,6 +235,9 @@ router.post('/', authMiddleware, [
 
         const shouldCreateMeet = req.body.createMeet === true || req.body.createMeet === 'true';
 
+        const hostAttendee = buildAttendeeFromUser(req.user);
+        const initialAttendees = hostAttendee ? [hostAttendee] : [];
+
         if ((shouldCreateMeet || !requestedMeetLink) && hasGoogleMeetConfig()) {
             try {
                 const startDateIso = sessionDate.toISOString();
@@ -207,7 +247,8 @@ router.post('/', authMiddleware, [
                     topic: session.topic,
                     description: session.description,
                     startDate: startDateIso,
-                    endDate: endDateIso
+                    endDate: endDateIso,
+                    attendees: initialAttendees
                 });
 
                 if (meetLink) {
@@ -278,6 +319,37 @@ router.post('/:id/enroll', authMiddleware, async (req, res) => {
 
         await notifySessionEnrollment(session, req.user);
 
+        if (session.googleEventId && session.googleCalendarId && hasGoogleMeetConfig()) {
+            try {
+                await syncEventAttendees({
+                    eventId: session.googleEventId,
+                    calendarId: session.googleCalendarId,
+                    attendees: collectAttendees(session)
+                });
+            } catch (syncError) {
+                console.error('Failed to sync Google Meet attendees:', syncError);
+            }
+        }
+
+        if (req.user && req.user.email) {
+            const joinInfo = computeJoinAvailability(session);
+            try {
+                await sendSessionEnrollmentEmail({
+                    email: req.user.email,
+                    participantName: req.user.name,
+                    hostName: session.creator ? session.creator.name : 'Your host',
+                    sessionTopic: session.topic,
+                    sessionDate: session.date,
+                    meetLink: session.meetLink,
+                    joinOpensMinutes: joinInfo.joinWindowMinutes
+                });
+            } catch (emailError) {
+                if (hasSmtpConfig()) {
+                    console.error('Failed to send enrollment email:', emailError);
+                }
+            }
+        }
+
         res.json({ message: 'Successfully enrolled in session', session: responseSession });
 
     } catch (error) {
@@ -343,6 +415,10 @@ router.put('/:id', authMiddleware, [
         const startDateIso = session.date.toISOString();
         const endDateIso = new Date(session.date.getTime() + durationMinutes * 60000).toISOString();
 
+        await session.populate('creator', 'name email');
+        await session.populate('participants.user', 'name email');
+        const attendeeList = collectAttendees(session);
+
         if (wantsAutoMeet) {
             if (!hasGoogleMeetConfig()) {
                 return res.status(503).json({ error: 'Google Meet integration is not configured' });
@@ -355,7 +431,8 @@ router.put('/:id', authMiddleware, [
                         topic: session.topic,
                         description: session.description,
                         startDate: startDateIso,
-                        endDate: endDateIso
+                        endDate: endDateIso,
+                        attendees: attendeeList
                     });
                     if (meetLink) {
                         session.meetLink = meetLink;
@@ -368,7 +445,8 @@ router.put('/:id', authMiddleware, [
                         topic: session.topic,
                         description: session.description,
                         startDate: startDateIso,
-                        endDate: endDateIso
+                        endDate: endDateIso,
+                        attendees: attendeeList
                     });
                     if (meetLink) {
                         session.meetLink = meetLink;
@@ -388,7 +466,8 @@ router.put('/:id', authMiddleware, [
                     topic: session.topic,
                     description: session.description,
                     startDate: startDateIso,
-                    endDate: endDateIso
+                    endDate: endDateIso,
+                    attendees: attendeeList
                 });
                 if (meetLink) {
                     session.meetLink = meetLink;
