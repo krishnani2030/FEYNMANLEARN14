@@ -1,30 +1,32 @@
-# Feynman Learn UI
+# Feynman Learn
 
-*Automatically synced with your [v0.app](https://v0.app) deployments*
+A web app that pairs students studying the same subject so they can take turns explaining concepts to each other. Based on the Feynman Technique: if you cannot explain something in simple terms, you have not understood it yet.
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/krishnigam14-7701s-projects/v0-feynman-learn-ui)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/projects/DU89maqvehI)
+## What it does
 
-## Overview
+- Create or join study groups for any subject
+- Schedule sessions with your group members
+- Each session, members take turns teaching a topic while the others ask questions and give feedback
+- Rate how well someone explained a concept to track improvement over time
 
-This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
+## Tech
 
-## Deployment
+Next.js (App Router), Supabase (auth + database), Tailwind CSS, shadcn/ui.
 
-Your project is live at:
+## Running locally
 
-**[https://vercel.com/krishnigam14-7701s-projects/v0-feynman-learn-ui](https://vercel.com/krishnigam14-7701s-projects/v0-feynman-learn-ui)**
+```bash
+pnpm install
+pnpm dev
+```
 
-## Build your app
+Set up a Supabase project and add your environment variables:
 
-Continue building your app on:
+```
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+```
 
-**[https://v0.app/chat/projects/DU89maqvehI](https://v0.app/chat/projects/DU89maqvehI)**
+## Deploy
 
-## How It Works
-
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+This project is set up on Vercel and syncs from the repo. Push to main to deploy.
